@@ -1,0 +1,27 @@
+{
+  "name": "the-dev-server",
+  "version": "0.1.0",
+  "description": "MCP server for tracking and managing development server state",
+  "license": "MIT",
+  "author": "",
+  "type": "module",
+  "bin": {
+    "the-dev-server": "./build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
+    "prepare": "npm run build",
+    "watch": "tsc --watch"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

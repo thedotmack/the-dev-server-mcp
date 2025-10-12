@@ -1,0 +1,73 @@
+# Development Server Rules (the-dev-server MCP)
+
+## 🎯 MANDATORY: Server State Management
+
+### ALWAYS FIRST STEP
+When I ask about the server, IMMEDIATELY:
+1. Call: `the-dev-server` MCP → `get-server-state()`
+2. If state is unknown/old/empty: Call `detect-server-process()`
+
+### WHEN I SAY...
+
+**"Is the server running?"**
+→ Call `get-server-state()` and report port, status, project location
+
+**"Start the server"** or **"Stop the server"**
+→ After executing, call `update-server-state()` with new status
+
+**"What port is it on?"**
+→ Call `get-server-state()` - NEVER guess
+
+**"Server not working"** or **"Server errors"**
+→ Use `diagnose-server` prompt for systematic debugging
+
+**"Check the logs"**
+→ Call `read-server-logs()` to read recent log lines
+
+**"What's running?"**
+→ Call `detect-server-process()` to scan all common ports
+
+### NEVER DO THIS
+- ❌ Assume port numbers (always query MCP)
+- ❌ Guess if server is running (always check state)
+- ❌ Forget to update state after starting/stopping
+- ❌ Skip checking state before answering server questions
+
+### ALWAYS DO THIS
+- ✅ Query `get-server-state()` first
+- ✅ Update state when I tell you about changes
+- ✅ Use `detect-server-process()` when uncertain
+- ✅ Trust the MCP as the single source of truth
+
+---
+
+## 📋 Project-Specific Info
+
+**Project Name:** [Auto-detected by MCP]  
+**Typical Port:** [Auto-detected by MCP]  
+**Server Tech:** [Auto-detected by MCP]  
+**Build Command:** [Your command, e.g., `npm run build`]  
+**Start Command:** [Your command, e.g., `npm run dev`]  
+**Log Location:** [Your logs path, if any]
+
+---
+
+## 🚀 Quick Reference
+
+```
+User: "Is it running?"
+You:  1. get-server-state()
+      2. Report findings
+
+User: "Start it"
+You:  1. Execute start command
+      2. update-server-state({status: "running", port: X})
+
+User: "It's broken"
+You:  1. diagnose-server prompt
+      2. read-server-logs()
+```
+
+---
+
+**Remember: This MCP exists to eliminate server confusion. Use it religiously!**

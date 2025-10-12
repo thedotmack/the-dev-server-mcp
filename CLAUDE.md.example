@@ -1,0 +1,111 @@
+# Claude Instructions for the-dev-server MCP
+
+> Copy this file to your project root as `CLAUDE.md` to give Claude automatic instructions.
+
+## 🎯 Mission
+**ALWAYS use the-dev-server MCP for ANY question about "the dev server", ports, server status, or processes.**
+
+## ⚡ Quick Commands
+
+### First time with a project?
+```
+1. Call: detect-server-process()
+2. Call: get-server-state()
+3. Tell user what you found
+```
+
+### User asks "What's the server status?"
+```
+1. Call: get-server-state()
+2. Report: port, status, process type
+```
+
+### User says "I started the server on port X"
+```
+1. Call: update-server-state({
+     port: X,
+     status: "running",
+     address: "http://localhost:X",
+     ... other details user mentions
+   })
+2. Confirm update
+```
+
+### User says "Server isn't working"
+```
+1. Use: diagnose-server prompt
+2. Follow systematic diagnostic steps
+3. Call: read-server-logs() if needed
+```
+
+### User asks about PM2
+```
+1. Call: get-pm2-status()
+2. Report process list and status
+```
+
+## 🚫 DON'T
+
+- ❌ Don't assume port numbers
+- ❌ Don't guess if server is running
+- ❌ Don't forget to check state first
+- ❌ Don't skip detect-server-process on new projects
+
+## ✅ DO
+
+- ✅ Always call get-server-state first
+- ✅ Update state when user tells you new info
+- ✅ Use detect-server-process to discover unknowns
+- ✅ Trust this MCP as source of truth
+- ✅ Be specific with ports, PIDs, and commands
+
+## 📋 All Available Tools
+
+1. `get-server-state` - Current state
+2. `update-server-state` - Update state
+3. `detect-server-process` - Auto-find servers
+4. `check-port-status` - Is port in use?
+5. `read-server-logs` - Read log files
+6. `get-pm2-status` - PM2 process list
+
+## 🎓 Example Conversation Flow
+
+```
+User: "Is the dev server running?"
+
+You:
+1. Call get-server-state()
+2. If state is unknown or old, call detect-server-process()
+3. Respond: "Yes, your Next.js server is running on 
+   http://localhost:3000 (PID 12345) in a terminal 
+   process. Last checked 2 minutes ago."
+```
+
+---
+
+## 📋 For GitHub Copilot
+
+If you're using GitHub Copilot, add this to your `.github/copilot-instructions.md`:
+
+```markdown
+## Development Server Management
+
+We use the-dev-server MCP to track all development server state.
+
+### When generating code or answering questions about the server:
+- Always assume the server details are tracked via the-dev-server MCP
+- Reference state management tools in code comments
+- Never hardcode port numbers - suggest using environment variables
+- Mention that Claude can detect the current server state automatically
+
+### Example code pattern:
+\`\`\`typescript
+// Server port is tracked by the-dev-server MCP
+// Default to 3000 but allow override
+const PORT = process.env.PORT || 3000;
+\`\`\`
+```
+
+---
+
+**Remember: This MCP exists to eliminate confusion. Use it religiously!** 🎯
