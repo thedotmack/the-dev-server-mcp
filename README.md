@@ -11,6 +11,7 @@
   <a href="#-features">Features</a> •
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-usage">Usage</a> •
+  <a href="#-testing-with-examples">Testing</a> •
   <a href="#-how-it-works">How It Works</a> •
   <a href="#-documentation">Documentation</a> •
   <a href="#-contributing">Contributing</a>
@@ -168,6 +169,59 @@ This ensures Claude and other AI assistants consistently use the MCP for server 
 ### Prompt
 
 `diagnose-server` – structured PM2-first debugging checklist.
+
+## 🧪 Testing with Examples
+
+This repository includes two example applications to showcase the MCP in action:
+
+### Example Applications
+
+1. **Next.js App** (`examples/example-nextjs`) - Next.js 15 + React 19 + TypeScript + Tailwind
+2. **Vite React App** (`examples/example-vite-react`) - Vite + React 19 + TypeScript + Tailwind
+
+Both apps include:
+- A home page
+- A nicely formatted documentation page
+- Strict CLAUDE.md instructions for the MCP
+- Ready-to-run configurations
+
+### How to Test
+
+1. **Install dependencies in an example:**
+   ```bash
+   cd examples/example-nextjs
+   npm install
+   ```
+
+2. **Set your MCP-compatible AI assistant's project root to the example folder** (e.g., `examples/example-nextjs`)
+
+3. **Use this exact prompt:**
+   ```
+   Make the site 'pretty in pink' and make sure it builds and runs
+   ```
+
+4. **What should happen:**
+   - The AI reads CLAUDE.md and sees the strict MCP instructions
+   - It checks server status with `get-managed-processes()`
+   - It registers the server if not registered
+   - It modifies the styles to be "pretty in pink"
+   - It uses the MCP to build and run the server (NOT direct npm commands)
+   - It confirms everything works
+
+### What This Demonstrates
+
+- ✅ The AI assistant **remembers** to use the MCP for all dev server operations
+- ✅ The strict CLAUDE.md instructions are **front and center**
+- ✅ No direct `npm run dev` or `npm run build` commands are used
+- ✅ The MCP manages the entire lifecycle: register → start → build → logs
+
+### Testing Both Examples
+
+Try the same prompt with both apps to see how the MCP handles different frameworks:
+- Next.js with App Router
+- Vite with React Router
+
+Both should behave consistently through the MCP interface.
 
 ## 🏗️ How It Works
 

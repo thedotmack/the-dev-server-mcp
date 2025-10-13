@@ -7,6 +7,7 @@ import { exec, ExecOptions } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as linkify from 'linkifyjs';
 
 const execAsync = promisify(exec);
 
@@ -84,52 +85,41 @@ const server = new McpServer({
   }
 },
 {
-  instructions: `CRITICAL: ALWAYS use this MCP to manage development servers via PM2.
+  instructions: `CRITICAL: ALWAYS use this MCP to manage development servers.
 
 FIRST TIME with a project:
-1. Register every dev process with register-managed-process()
-2. Review registered processes with get-managed-processes()
+1. Register every dev server with register-managed-process()
+2. Review registered servers with get-managed-processes()
 
 WHEN USER ASKS about server state:
-1. Call get-managed-processes() to inspect PM2 status
-2. Start or stop processes with start-managed-process() / stop-managed-process()
+1. Call get-managed-processes() to check what's running
+2. Start or stop servers with start-managed-process() / stop-managed-process()
 3. Update configuration with update-managed-process()
 
 WHEN DEBUGGING:
 - Use the diagnose-server prompt for systematic troubleshooting
-- Tail logs with read-managed-process-logs()
+- Check logs with read-managed-process-logs()
 
-NEVER bypass PM2. ALWAYS manage processes through this MCP.`
+ALWAYS manage servers through this MCP.`
 });
 
 /**
  * Tool: get-managed-processes
- * Returns tracked PM2-managed processes and their status
+ * Returns registered servers and their current status
  */
 server.registerTool(
   'get-managed-processes',
   {
-    title: 'List Managed Processes',
-    description: 'List all processes registered with this MCP and their PM2 status',
+    title: 'List Managed Servers',
+    description: 'List all registered development servers and their current status',
     inputSchema: {},
     outputSchema: {
-      tracked: z.array(z.object({
+      servers: z.array(z.object({
         name: z.string(),
-        script: z.string(),
-        cwd: z.string().optional(),
-        args: z.array(z.string()).optional(),
-        env: z.record(z.string()).optional(),
-        interpreter: z.string().optional(),
-        instances: z.number().optional(),
-        watch: z.boolean().optional(),
-        autorestart: z.boolean().optional()
-      })),
-      pm2: z.array(z.object({
-        name: z.string(),
-        pid: z.number(),
         status: z.string(),
-        cpu: z.string(),
-        memory: z.string()
+        memory: z.string().optional(),
+        script: z.string(),
+        cwd: z.string().optional()
       })),
       lastSynced: z.string().optional()
     }
@@ -137,30 +127,42 @@ server.registerTool(
   async () => {
     await loadState();
 
-    let pm2Processes: Array<{ name: string; pid: number; status: string; cpu: string; memory: string }> = [];
+    let pm2ProcessMap: Map<string, any> = new Map();
     try {
       const stdout = await runPm2('pm2 jlist');
       const parsed = JSON.parse(stdout);
-      pm2Processes = parsed.map((p: any) => ({
-        name: p.name,
-        pid: p.pid,
-        status: p.pm2_env.status,
-        cpu: `${p.monit.cpu}%`,
-        memory: `${Math.round(p.monit.memory / 1024 / 1024)}MB`
-      }));
+      parsed.forEach((p: any) => {
+        pm2ProcessMap.set(p.name, p);
+      });
     } catch (error) {
-      // PM2 not available; return empty array
+      // Process manager not available; mark all as stopped
     }
 
+    const servers = Object.values(serverState.managedProcesses).map(config => {
+      const pm2Info = pm2ProcessMap.get(config.name);
+      const status = pm2Info?.pm2_env?.status || 'stopped';
+      const memory = pm2Info?.monit?.memory
+        ? `${Math.round(pm2Info.monit.memory / 1024 / 1024)}MB`
+        : undefined;
+
+      return {
+        name: config.name,
+        status,
+        memory,
+        script: config.script,
+        cwd: config.cwd
+      };
+    });
+
     const output = {
-      tracked: Object.values(serverState.managedProcesses),
-      pm2: pm2Processes,
+      servers,
       lastSynced: serverState.lastSynced?.toISOString()
     };
+
     return {
-      content: [{ 
-        type: 'text', 
-        text: `Managed Processes (tracked vs PM2 state):\n${JSON.stringify(output, null, 2)}` 
+      content: [{
+        type: 'text',
+        text: `Registered Servers:\n${JSON.stringify(output, null, 2)}`
       }],
       structuredContent: output
     };
@@ -169,24 +171,24 @@ server.registerTool(
 
 /**
  * Tool: register-managed-process
- * Registers a new PM2-managed process with optional auto-start
+ * Registers a new development server with optional auto-start
  */
 server.registerTool(
   'register-managed-process',
   {
-    title: 'Register Managed Process',
-    description: 'Register a new development process to be managed via PM2',
+    title: 'Register Development Server',
+    description: 'Register a new development server to be managed by this MCP',
     inputSchema: {
-      name: z.string().describe('Unique PM2 process name'),
+      name: z.string().describe('Unique server name'),
       script: z.string().describe('Command or script to run'),
       cwd: z.string().optional().describe('Working directory for the process'),
       args: z.array(z.string()).optional().describe('Arguments passed to the script'),
-      env: z.record(z.string()).optional().describe('Environment variables for the process'),
+      env: z.record(z.string()).optional().describe('Environment variables for the server'),
       interpreter: z.string().optional().describe('Interpreter to use (e.g., node, python)'),
-      instances: z.number().optional().describe('Number of instances for PM2 cluster mode'),
-      watch: z.boolean().optional().describe('Enable PM2 watch mode'),
-      autorestart: z.boolean().optional().describe('Enable PM2 autorestart'),
-      startImmediately: z.boolean().optional().default(true).describe('Start the process right after registration')
+      instances: z.number().optional().describe('Number of instances for cluster mode'),
+      watch: z.boolean().optional().describe('Enable watch mode'),
+      autorestart: z.boolean().optional().describe('Enable autorestart'),
+      startImmediately: z.boolean().optional().default(true).describe('Start the server right after registration')
     },
     outputSchema: {
       success: z.boolean(),
@@ -233,7 +235,7 @@ server.registerTool(
     return {
       content: [{
         type: 'text',
-        text: `Registered process ${config.name}${startImmediately ? ' and started it via PM2.' : '.'}`
+        text: `Server '${config.name}' registered${startImmediately ? ' and started' : ''}`
       }],
       structuredContent: output
     };
@@ -259,7 +261,7 @@ server.registerTool(
       instances: z.number().optional(),
       watch: z.boolean().optional(),
       autorestart: z.boolean().optional(),
-      applyToPm2: z.boolean().optional().default(false).describe('Restart process with new settings immediately via PM2')
+      applyToPm2: z.boolean().optional().default(false).describe('Restart server with new settings immediately')
     },
     outputSchema: {
       success: z.boolean(),
@@ -307,7 +309,7 @@ server.registerTool(
     return {
       content: [{
         type: 'text',
-        text: `Updated process ${name}${applyToPm2 ? ' and applied changes via PM2.' : '.'}`
+        text: `Server '${name}' updated${applyToPm2 ? ' and restarted with new settings' : ''}`
       }],
       structuredContent: output
     };
@@ -378,38 +380,73 @@ async function describePm2Process(name: string) {
 
 /**
  * Tool: start-managed-process
- * Starts a registered process via PM2
+ * Starts a registered development server
  */
 server.registerTool(
   'start-managed-process',
   {
-    title: 'Start Managed Process',
-    description: 'Start a registered process via PM2',
+    title: 'Start Development Server',
+    description: 'Start a registered development server',
     inputSchema: {
-      name: z.string().describe('Name of the managed process to start')
+      name: z.string().describe('Name of the server to start')
     },
     outputSchema: {
       success: z.boolean(),
-      pm2: z.string()
+      status: z.string()
     }
   },
   async ({ name }) => {
     await loadState();
     const config = serverState.managedProcesses[name];
     if (!config) {
-      throw new Error(`Managed process '${name}' is not registered. Use register-managed-process first.`);
+      throw new Error(`Server '${name}' is not registered. Use register-managed-process first.`);
     }
 
     await startPm2Process(config);
+
+    // Wait briefly and try to detect URL from logs
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    let urlInfo = '';
+    try {
+      const logs = await runPm2(`pm2 logs ${name} --lines 100 --nostream`);
+
+      // Use linkifyjs to find all URLs in the logs
+      const links = linkify.find(logs, 'url');
+
+      // Find first http/https URL (prioritize localhost, 127.0.0.1, 0.0.0.0)
+      const localUrl = links.find(link =>
+        link.href.includes('localhost') ||
+        link.href.includes('127.0.0.1') ||
+        link.href.includes('0.0.0.0')
+      );
+
+      const foundUrl = localUrl || links[0];
+
+      if (foundUrl) {
+        // Clean up the URL (remove trailing slashes)
+        let url = foundUrl.href.replace(/\/+$/, '');
+        urlInfo = ` on ${url}`;
+      } else {
+        // Fallback: look for just port number
+        const portMatch = logs.match(/(?:port|Port|PORT)[\s:]+(\d{4,5})/);
+        if (portMatch) {
+          urlInfo = ` on http://localhost:${portMatch[1]}`;
+        }
+      }
+    } catch (error) {
+      // Couldn't get logs, continue without URL info
+    }
+
     const output = {
       success: true,
-      pm2: 'Started'
+      status: 'started'
     };
 
     return {
       content: [{
         type: 'text',
-        text: `Started process ${name} via PM2.`
+        text: `Server '${name}' started${urlInfo}`
       }],
       structuredContent: output
     };
@@ -418,15 +455,15 @@ server.registerTool(
 
 /**
  * Tool: stop-managed-process
- * Stops a managed process via PM2
+ * Stops a running development server
  */
 server.registerTool(
   'stop-managed-process',
   {
-    title: 'Stop Managed Process',
-    description: 'Stop a PM2 process managed by this MCP',
+    title: 'Stop Development Server',
+    description: 'Stop a running development server',
     inputSchema: {
-      name: z.string().describe('Name of the process to stop')
+      name: z.string().describe('Name of the server to stop')
     },
     outputSchema: {
       success: z.boolean()
@@ -441,7 +478,7 @@ server.registerTool(
     return {
       content: [{
         type: 'text',
-        text: `Stopped process ${name} via PM2.`
+        text: `Server '${name}' stopped`
       }],
       structuredContent: output
     };
@@ -450,32 +487,32 @@ server.registerTool(
 
 /**
  * Tool: restart-managed-process
- * Restarts a managed process via PM2
+ * Restarts a running development server
  */
 server.registerTool(
   'restart-managed-process',
   {
-    title: 'Restart Managed Process',
-    description: 'Restart a PM2 process managed by this MCP',
+    title: 'Restart Development Server',
+    description: 'Restart a running development server',
     inputSchema: {
-      name: z.string().describe('Name of the process to restart')
+      name: z.string().describe('Name of the server to restart')
     },
     outputSchema: {
       success: z.boolean(),
-      pm2: z.string()
+      status: z.string()
     }
   },
   async ({ name }) => {
     await restartPm2Process(name);
     const output = {
       success: true,
-      pm2: 'Restarted'
+      status: 'restarted'
     };
 
     return {
       content: [{
         type: 'text',
-        text: `Restarted process ${name} via PM2.`
+        text: `Server '${name}' restarted`
       }],
       structuredContent: output
     };
@@ -484,16 +521,16 @@ server.registerTool(
 
 /**
  * Tool: delete-managed-process
- * Unregisters and removes a process from PM2
+ * Unregisters and stops a development server
  */
 server.registerTool(
   'delete-managed-process',
   {
-    title: 'Delete Managed Process',
-    description: 'Delete a managed process from PM2 and remove it from tracking',
+    title: 'Delete Development Server',
+    description: 'Delete a development server and remove it from tracking',
     inputSchema: {
-      name: z.string().describe('Name of the process to delete'),
-      deleteFromPm2: z.boolean().optional().default(true).describe('Remove the process from PM2 as well')
+      name: z.string().describe('Name of the server to delete'),
+      deleteFromPm2: z.boolean().optional().default(true).describe('Stop the running server as well')
     },
     outputSchema: {
       success: z.boolean()
@@ -516,7 +553,7 @@ server.registerTool(
     return {
       content: [{
         type: 'text',
-        text: `Deleted process ${name} from tracking${deleteFromPm2 ? ' and PM2.' : '.'}`
+        text: `Server '${name}' deleted${deleteFromPm2 ? ' and stopped' : ''}`
       }],
       structuredContent: output
     };
@@ -559,15 +596,15 @@ server.registerTool(
 
 /**
  * Tool: read-managed-process-logs
- * Tail logs for a PM2-managed process
+ * Read logs for a development server
  */
 server.registerTool(
   'read-managed-process-logs',
   {
-    title: 'Read Managed Process Logs',
-    description: 'Tail the logs for a managed PM2 process',
+    title: 'Read Server Logs',
+    description: 'Read recent logs from a development server',
     inputSchema: {
-      name: z.string().describe('Process name'),
+      name: z.string().describe('Server name'),
       lines: z.number().optional().default(50).describe('Number of log lines to read'),
       type: z.enum(['all', 'out', 'error']).optional().default('all').describe('Log stream to read')
     },
@@ -584,16 +621,35 @@ server.registerTool(
       command += ' --err';
     }
 
-    const logs = await runPm2(command);
+    const rawLogs = await runPm2(command);
+
+    // Strip PM2 formatting and paths
+    let cleanedLogs = rawLogs
+      // Remove PM2 log file paths
+      .replace(/\/.*\.pm2\/logs\/.*\.log last \d+ lines:/g, '')
+      // Remove PM2 process ID prefixes (e.g., "10|example | ")
+      .replace(/^\s*\d+\|[^|]+\|\s*/gm, '')
+      // Remove [TAILING] messages
+      .replace(/\[TAILING\].*$/gm, '')
+      // Add simple timestamps (using current time as approximation)
+      .split('\n')
+      .filter(line => line.trim())
+      .map(line => {
+        const now = new Date();
+        const timeStr = now.toTimeString().split(' ')[0]; // HH:MM:SS
+        return `[${timeStr}] ${line}`;
+      })
+      .join('\n');
+
     const output = {
       success: true,
-      logs
+      logs: cleanedLogs
     };
 
     return {
       content: [{
         type: 'text',
-        text: logs
+        text: `Recent logs for '${name}':\n${cleanedLogs}`
       }],
       structuredContent: output
     };
@@ -733,11 +789,11 @@ server.registerPrompt(
             content: {
               type: 'text',
               text: `Please help diagnose this development server issue: ${issue || 'Server not responding'}\n\nCheck the following:
-1. Is the process registered? (use get-managed-processes)
-2. Does PM2 report it as running? (use get-pm2-status)
+1. Is the server registered? (use get-managed-processes)
+2. What is its current status? (use get-managed-processes)
 3. Can you start or restart it? (use start-managed-process or restart-managed-process)
 4. Are there any errors in the logs? (use read-managed-process-logs)
-5. Does the configuration look correct? (use describe-managed-process)
+5. Check if dependencies are installed and the port is available
 
 Provide a comprehensive diagnosis and recommended next steps.`
         }

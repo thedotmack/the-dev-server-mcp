@@ -1,71 +1,16 @@
-# Development Server Rules (the-dev-server MCP)
+# Dev Server Rules
 
-## 🎯 MANDATORY: PM2 Process Management
+ALWAYS use the-dev-server MCP for dev server management.
 
-### ALWAYS FIRST STEPS
-When I talk about dev servers:
-1. Call: `the-dev-server` MCP → `get-managed-processes()`
-2. If a service is missing, use `register-managed-process()` before doing anything else.
+## Start Every Conversation
+`get-managed-processes()` - check registered servers and status
 
-### WHEN I SAY...
+## User Commands
+- "Is it running?" → `get-managed-processes()`
+- "Start/stop/restart" → `start-managed-process()` / `stop-managed-process()` / `restart-managed-process()`
+- "Add new server" → `register-managed-process()`
+- "Change config" → `update-managed-process({...changes, applyToPm2: true})`
+- "It's broken" → `diagnose-server` + `read-managed-process-logs()`
+- "Remove it" → `delete-managed-process()`
 
-**"Start / stop / restart the server"**
-→ Use `start-managed-process()` / `stop-managed-process()` / `restart-managed-process()`.
-
-**"Change its config"**
-→ Call `update-managed-process({...changes, applyToPm2: true})`.
-
-**"It's broken"**
-→ Run the `diagnose-server` prompt, follow instructions, and tail logs with `read-managed-process-logs()`.
-
-**"Show me what's running"**
-→ Call `get-managed-processes()` (and optionally `get-pm2-status()` for full PM2 view).
-
-**"Remove this service"**
-→ Call `delete-managed-process({ name, deleteFromPm2: true })`.
-
-### NEVER DO THIS
-- ❌ Run raw `pm2` CLI commands manually
-- ❌ Assume a process exists without checking the registry
-- ❌ Edit `.the-dev-server-state.json` by hand
-- ❌ Leave orphaned PM2 processes
-
-### ALWAYS DO THIS
-- ✅ Register processes before trying to start them
-- ✅ Use MCP lifecycle tools for every start/stop/restart/delete
-- ✅ Confirm outcomes with `get-managed-processes()`
-- ✅ Tail logs via MCP tools
-- ✅ Trust the MCP as the single source of truth
-
----
-
-## 📋 Project-Specific Info
-
-**Project Name:** [Auto-detected by MCP]  
-**Typical Port:** Managed via environment variables in process config  
-**Server Tech:** Describe when registering (e.g., Next.js, Vite)  
-**Build Command:** [Your command, e.g., `npm run build`]  
-**Start Command:** Register with `script` + `args` (e.g., `npm run dev`)  
-**Log Location:** Access via `read-managed-process-logs`
-
----
-
-## 🚀 Quick Reference
-
-```
-User: "Is it running?"
-You:  1. get-managed-processes()
-      2. Report registry + PM2 status
-
-User: "Start it"
-You:  1. start-managed-process({ name })
-      2. Confirm via get-managed-processes()
-
-User: "It's broken"
-You:  1. diagnose-server prompt
-      2. read-managed-process-logs({ type: "error" })
-```
-
----
-
-**Remember: This MCP exists to eliminate server confusion. Use it religiously!**
+Trust the MCP as the single source of truth.
