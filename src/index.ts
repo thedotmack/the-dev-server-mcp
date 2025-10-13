@@ -8,6 +8,7 @@ import { promisify } from 'util';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as linkify from 'linkifyjs';
+import * as os from 'os';
 
 const execAsync = promisify(exec);
 
@@ -24,6 +25,7 @@ interface ManagedProcessConfig {
   instances?: number;
   watch?: boolean;
   autorestart?: boolean;
+  logOffset?: number; // Byte offset for reading fresh logs after restart
 }
 
 interface DevServerState {
@@ -317,9 +319,42 @@ server.registerTool(
 );
 
 /**
+ * Helper: check if a process exists in PM2
+ */
+async function getPm2ProcessInfo(name: string): Promise<any | null> {
+  try {
+    const stdout = await runPm2('pm2 jlist');
+    const processes = JSON.parse(stdout);
+    return processes.find((p: any) => p.name === name) || null;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
  * Helper: start process via PM2 using stored configuration
+ * Prevents duplicate instances by checking if process already exists
  */
 async function startPm2Process(config: ManagedProcessConfig) {
+  // Check if process already exists in PM2
+  const existingProcess = await getPm2ProcessInfo(config.name);
+
+  if (existingProcess) {
+    const status = existingProcess.pm2_env?.status;
+
+    if (status === 'online') {
+      // Process already running, don't create duplicate
+      return;
+    } else if (status === 'stopped') {
+      // Process exists but stopped, restart it instead
+      await restartPm2Process(config.name);
+      return;
+    }
+    // If status is something else (errored, etc), delete and recreate
+    await deletePm2Process(config.name);
+  }
+
+  // Process doesn't exist, create it
   const parts = ['pm2', 'start', config.script, '--name', config.name];
 
   if (config.interpreter) {
@@ -337,7 +372,13 @@ async function startPm2Process(config: ManagedProcessConfig) {
   if (config.watch === false) {
     parts.push('--no-watch');
   }
-  if (config.autorestart === false) {
+
+  // Disable autorestart by default unless explicitly enabled
+  // This allows us to see when servers crash instead of hiding failures
+  if (config.autorestart === true) {
+    // Autorestart explicitly enabled, PM2 default behavior
+  } else {
+    // Default: disable autorestart to surface issues
     parts.push('--no-autorestart');
   }
 
@@ -379,6 +420,15 @@ async function describePm2Process(name: string) {
 }
 
 /**
+ * Helper: Get the path to PM2 log files for a process
+ */
+function getPm2LogPath(name: string, type: 'out' | 'error' = 'out'): string {
+  const pm2Home = process.env.PM2_HOME || path.join(os.homedir(), '.pm2');
+  const suffix = type === 'error' ? 'error.log' : 'out.log';
+  return path.join(pm2Home, 'logs', `${name}-${suffix}`);
+}
+
+/**
  * Tool: start-managed-process
  * Starts a registered development server
  */
@@ -403,6 +453,18 @@ server.registerTool(
     }
 
     await startPm2Process(config);
+
+    // Initialize log offset after start
+    try {
+      const logPath = getPm2LogPath(name, 'out');
+      // Wait briefly for log file to be created
+      await new Promise(resolve => setTimeout(resolve, 500));
+      const stats = await fs.stat(logPath);
+      serverState.managedProcesses[name].logOffset = stats.size;
+      await persistState();
+    } catch (error) {
+      // Log file might not exist yet, will be 0 by default
+    }
 
     // Wait briefly and try to detect URL from logs
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -503,7 +565,30 @@ server.registerTool(
     }
   },
   async ({ name }) => {
+    await loadState();
+
+    // Flush logs before restart to get fresh output
+    try {
+      await runPm2(`pm2 flush ${name}`);
+    } catch (error) {
+      // Ignore flush errors, continue with restart
+    }
+
     await restartPm2Process(name);
+
+    // After restart, capture the log file offset for fresh log reads
+    try {
+      const logPath = getPm2LogPath(name, 'out');
+      const stats = await fs.stat(logPath);
+
+      if (serverState.managedProcesses[name]) {
+        serverState.managedProcesses[name].logOffset = stats.size;
+        await persistState();
+      }
+    } catch (error) {
+      // Log file might not exist yet, offset will be 0 by default
+    }
+
     const output = {
       success: true,
       status: 'restarted'
@@ -512,7 +597,7 @@ server.registerTool(
     return {
       content: [{
         type: 'text',
-        text: `Server '${name}' restarted`
+        text: `Server '${name}' restarted (logs flushed)`
       }],
       structuredContent: output
     };
@@ -606,40 +691,74 @@ server.registerTool(
     inputSchema: {
       name: z.string().describe('Server name'),
       lines: z.number().optional().default(50).describe('Number of log lines to read'),
-      type: z.enum(['all', 'out', 'error']).optional().default('all').describe('Log stream to read')
+      type: z.enum(['all', 'out', 'error']).optional().default('all').describe('Log stream to read'),
+      freshOnly: z.boolean().optional().default(false).describe('Only read logs since last restart (uses stored offset)')
     },
     outputSchema: {
       success: z.boolean(),
       logs: z.string()
     }
   },
-  async ({ name, lines = 50, type = 'all' }) => {
-    let command = `pm2 logs ${name} --lines ${lines} --nostream`;
-    if (type === 'out') {
-      command += ' --out';
-    } else if (type === 'error') {
-      command += ' --err';
+  async ({ name, lines = 50, type = 'all', freshOnly = false }) => {
+    await loadState();
+
+    let cleanedLogs = '';
+
+    // If freshOnly is true, read from log file using stored offset
+    if (freshOnly && serverState.managedProcesses[name]?.logOffset !== undefined) {
+      try {
+        const logPath = getPm2LogPath(name, type === 'error' ? 'error' : 'out');
+        const offset = serverState.managedProcesses[name].logOffset || 0;
+
+        // Read from offset to end of file
+        const fileHandle = await fs.open(logPath, 'r');
+        const stats = await fileHandle.stat();
+        const bytesToRead = stats.size - offset;
+
+        if (bytesToRead > 0) {
+          // Limit to reasonable size (1MB)
+          const maxBytes = 1024 * 1024;
+          const readSize = Math.min(bytesToRead, maxBytes);
+          const buffer = Buffer.alloc(readSize);
+
+          await fileHandle.read(buffer, 0, readSize, offset);
+          await fileHandle.close();
+
+          cleanedLogs = buffer.toString('utf8');
+
+          // Update offset for next read
+          serverState.managedProcesses[name].logOffset = offset + readSize;
+          await persistState();
+        } else {
+          cleanedLogs = '(no new logs since last restart)';
+        }
+      } catch (error) {
+        // Fall back to PM2 command if direct file read fails
+        freshOnly = false;
+      }
     }
 
-    const rawLogs = await runPm2(command);
+    // If not using freshOnly mode or fallback needed, use PM2 command
+    if (!freshOnly) {
+      let command = `pm2 logs ${name} --lines ${lines} --nostream`;
+      if (type === 'out') {
+        command += ' --out';
+      } else if (type === 'error') {
+        command += ' --err';
+      }
 
-    // Strip PM2 formatting and paths
-    let cleanedLogs = rawLogs
-      // Remove PM2 log file paths
-      .replace(/\/.*\.pm2\/logs\/.*\.log last \d+ lines:/g, '')
-      // Remove PM2 process ID prefixes (e.g., "10|example | ")
-      .replace(/^\s*\d+\|[^|]+\|\s*/gm, '')
-      // Remove [TAILING] messages
-      .replace(/\[TAILING\].*$/gm, '')
-      // Add simple timestamps (using current time as approximation)
-      .split('\n')
-      .filter(line => line.trim())
-      .map(line => {
-        const now = new Date();
-        const timeStr = now.toTimeString().split(' ')[0]; // HH:MM:SS
-        return `[${timeStr}] ${line}`;
-      })
-      .join('\n');
+      const rawLogs = await runPm2(command);
+
+      // Strip PM2 formatting and paths
+      cleanedLogs = rawLogs
+        // Remove PM2 log file paths
+        .replace(/\/.*\.pm2\/logs\/.*\.log last \d+ lines:/g, '')
+        // Remove PM2 process ID prefixes (e.g., "10|example | ")
+        .replace(/^\s*\d+\|[^|]+\|\s*/gm, '')
+        // Remove [TAILING] messages
+        .replace(/\[TAILING\].*$/gm, '')
+        .trim();
+    }
 
     const output = {
       success: true,
@@ -649,7 +768,7 @@ server.registerTool(
     return {
       content: [{
         type: 'text',
-        text: `Recent logs for '${name}':\n${cleanedLogs}`
+        text: `Recent logs for '${name}'${freshOnly ? ' (fresh only)' : ''}:\n${cleanedLogs}`
       }],
       structuredContent: output
     };

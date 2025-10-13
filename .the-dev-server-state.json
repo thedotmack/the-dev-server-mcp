@@ -1,0 +1,14 @@
+{
+  "managedProcesses": {
+    "example-nextjs": {
+      "name": "example-nextjs",
+      "script": "npm",
+      "cwd": "/Users/alexnewman/Scripts/the-dev-server-mcp/examples/example-nextjs",
+      "args": [
+        "run",
+        "dev"
+      ]
+    }
+  },
+  "lastSynced": "2025-10-13T21:49:37.114Z"
+}
