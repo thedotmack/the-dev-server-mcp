@@ -1,42 +1,40 @@
 # Development Server Rules (the-dev-server MCP)
 
-## 🎯 MANDATORY: Server State Management
+## 🎯 MANDATORY: PM2 Process Management
 
-### ALWAYS FIRST STEP
-When I ask about the server, IMMEDIATELY:
-1. Call: `the-dev-server` MCP → `get-server-state()`
-2. If state is unknown/old/empty: Call `detect-server-process()`
+### ALWAYS FIRST STEPS
+When I talk about dev servers:
+1. Call: `the-dev-server` MCP → `get-managed-processes()`
+2. If a service is missing, use `register-managed-process()` before doing anything else.
 
 ### WHEN I SAY...
 
-**"Is the server running?"**
-→ Call `get-server-state()` and report port, status, project location
+**"Start / stop / restart the server"**
+→ Use `start-managed-process()` / `stop-managed-process()` / `restart-managed-process()`.
 
-**"Start the server"** or **"Stop the server"**
-→ After executing, call `update-server-state()` with new status
+**"Change its config"**
+→ Call `update-managed-process({...changes, applyToPm2: true})`.
 
-**"What port is it on?"**
-→ Call `get-server-state()` - NEVER guess
+**"It's broken"**
+→ Run the `diagnose-server` prompt, follow instructions, and tail logs with `read-managed-process-logs()`.
 
-**"Server not working"** or **"Server errors"**
-→ Use `diagnose-server` prompt for systematic debugging
+**"Show me what's running"**
+→ Call `get-managed-processes()` (and optionally `get-pm2-status()` for full PM2 view).
 
-**"Check the logs"**
-→ Call `read-server-logs()` to read recent log lines
-
-**"What's running?"**
-→ Call `detect-server-process()` to scan all common ports
+**"Remove this service"**
+→ Call `delete-managed-process({ name, deleteFromPm2: true })`.
 
 ### NEVER DO THIS
-- ❌ Assume port numbers (always query MCP)
-- ❌ Guess if server is running (always check state)
-- ❌ Forget to update state after starting/stopping
-- ❌ Skip checking state before answering server questions
+- ❌ Run raw `pm2` CLI commands manually
+- ❌ Assume a process exists without checking the registry
+- ❌ Edit `.the-dev-server-state.json` by hand
+- ❌ Leave orphaned PM2 processes
 
 ### ALWAYS DO THIS
-- ✅ Query `get-server-state()` first
-- ✅ Update state when I tell you about changes
-- ✅ Use `detect-server-process()` when uncertain
+- ✅ Register processes before trying to start them
+- ✅ Use MCP lifecycle tools for every start/stop/restart/delete
+- ✅ Confirm outcomes with `get-managed-processes()`
+- ✅ Tail logs via MCP tools
 - ✅ Trust the MCP as the single source of truth
 
 ---
@@ -44,11 +42,11 @@ When I ask about the server, IMMEDIATELY:
 ## 📋 Project-Specific Info
 
 **Project Name:** [Auto-detected by MCP]  
-**Typical Port:** [Auto-detected by MCP]  
-**Server Tech:** [Auto-detected by MCP]  
+**Typical Port:** Managed via environment variables in process config  
+**Server Tech:** Describe when registering (e.g., Next.js, Vite)  
 **Build Command:** [Your command, e.g., `npm run build`]  
-**Start Command:** [Your command, e.g., `npm run dev`]  
-**Log Location:** [Your logs path, if any]
+**Start Command:** Register with `script` + `args` (e.g., `npm run dev`)  
+**Log Location:** Access via `read-managed-process-logs`
 
 ---
 
@@ -56,16 +54,16 @@ When I ask about the server, IMMEDIATELY:
 
 ```
 User: "Is it running?"
-You:  1. get-server-state()
-      2. Report findings
+You:  1. get-managed-processes()
+      2. Report registry + PM2 status
 
 User: "Start it"
-You:  1. Execute start command
-      2. update-server-state({status: "running", port: X})
+You:  1. start-managed-process({ name })
+      2. Confirm via get-managed-processes()
 
 User: "It's broken"
 You:  1. diagnose-server prompt
-      2. read-server-logs()
+      2. read-managed-process-logs({ type: "error" })
 ```
 
 ---

@@ -4,7 +4,7 @@
   <br>
 </h1>
 
-<h4 align="center">Never let Claude get confused about your development server again.</h4>
+<h4 align="center">Let Claude register, start, and inspect every dev server you run with PM2.</h4>
 
 <p align="center">
   <a href="#-why-this-exists">Why</a> •
@@ -17,34 +17,32 @@
 </p>
 
 <p align="center">
-  <em>A Model Context Protocol (MCP) server that tracks and manages the state of your development server, providing Claude with persistent memory and awareness of server status, ports, processes, and logs.</em>
+  <em>A Model Context Protocol (MCP) server that owns PM2 process management for your dev environments—Claude can register processes, boot them, inspect logs, and keep configuration in sync.</em>
 </p>
 
 ---
 
 ## 🎯 Why This Exists
 
-Claude constantly forgets:
-- ❌ What port your server is running on
-- ❌ Whether the server is actually running
-- ❌ How the server is being managed (terminal? PM2? background?)
-- ❌ Where to find server logs
-- ❌ What commands to use to build/start
+Running multiple dev servers across projects quickly gets messy:
+- ❌ Configs live in random scripts and terminal history
+- ❌ Each teammate manages PM2 differently (or not at all)
+- ❌ Restart workflows are tribal knowledge
+- ❌ Log files are scattered and forgotten
+- ❌ Claude has to guess which process you care about
 
-**the-dev-server MCP solves this** by giving Claude a reliable, queryable source of truth for all dev server state.
+**the-dev-server MCP solves this** by letting Claude act as the PM2 control plane. Every dev server you care about is registered once, stored in versioned JSON, and controlled through the same MCP tools.
 
 ## ✨ Features
 
-* **🔍 Auto-Detection** - Automatically discovers running development servers on common ports
-* **📊 State Tracking** - Maintains persistent knowledge of server configuration across conversations
-* **🔌 Port Monitoring** - Check which ports are in use and by what process
-* **📂 Project Location** - Tracks which project directory each server is running from
-* **📝 Log Access** - Direct access to server log files for debugging
-* **⚙️ PM2 Integration** - Full support for PM2-managed processes
-* **🩺 Diagnostic Tools** - Structured troubleshooting prompts and workflows
-* **💾 Persistent Memory** - State survives across multiple Claude queries
-* **🎯 Zero Configuration** - Works out of the box after setup
-* **🔧 Cross-Platform** - Supports macOS and Linux
+* **🧠 Managed Process Registry** – Declare every dev service (script, cwd, args, env) once; the MCP persists it in `.the-dev-server-state.json`.
+* **⚙️ PM2 Orchestration** – Start, stop, restart, delete, and describe processes entirely through MCP tools.
+* **� Config Drift Control** – Update registrations, apply config changes to PM2 instantly, and keep state in sync.
+* **� Unified Status View** – `get-managed-processes` merges the stored registry with live PM2 status so Claude sees what *should* exist and what’s actually running.
+* **📝 Log Streaming** – Tail standard/out or error logs from any registered process without leaving the conversation.
+* **🩺 Troubleshooting Prompt** – `diagnose-server` walks Claude through a PM2-first debugging workflow.
+* **💾 Disk Persistence** – Registrations survive MCP restarts, so once a process is defined it’s available forever.
+* **🔧 macOS & Linux Support** – Built for Unix environments where PM2 is available (Windows support coming later).
 
 ## 🚀 Quick Start
 
@@ -96,99 +94,105 @@ cp /path/to/the-dev-server-mcp/.clinerules.example /your/project/.clinerules
 
 This ensures Claude and other AI assistants consistently use the MCP for server questions.
 
-> **� Note:** The MCP includes built-in instructions that Claude sees automatically. Project files are optional but recommended for best results.
+> **🔔 Note:** The MCP includes built-in instructions that Claude sees automatically. Project files reinforce "always manage servers through PM2" on a per-repo basis.
 
 ## 📖 Usage
 
-### In Your Claude Conversations
+### Day-to-day Flow
 
-Simply tell Claude to use the MCP:
+1. **Register every dev server once**
 
-> "Use the-dev-server MCP to check the current server status"
+  Claude: `register-managed-process`
 
-Or set it as a project instruction:
+  ```json
+  {
+    "name": "next-app",
+    "script": "npm",
+    "args": ["run", "dev"],
+    "cwd": "/Users/alexnewman/Projects/next-app",
+    "env": { "PORT": "3000" }
+  }
+  ```
 
-> "Always use the-dev-server MCP for all development server questions. Call get-server-state or detect-server-process at the start of any server-related conversation."
+  This stores the config locally and (optionally) starts it immediately through PM2.
 
-### Available Tools
+2. **Start / stop / restart on demand**
 
-#### 1. `get-server-state`
-Get the current tracked state of your dev server.
+  - `start-managed-process` → boots the registered script via PM2
+  - `stop-managed-process` → graceful shutdown
+  - `restart-managed-process` → great for config reloads or code changes
 
-```
-Example: "What's the current server state?"
-```
+3. **Inspect state at any time**
 
-#### 2. `update-server-state`
-Manually update the server state with new information.
+  - `get-managed-processes` shows both the registry and live PM2 info side-by-side.
+  - `describe-managed-process` provides the raw PM2 describe output when you need low-level details.
 
-```
-Example: "I just started the server on port 3000 using npm run dev"
-Claude will use update-server-state to track this
-```
+4. **Update definitions safely**
 
-#### 3. `detect-server-process`
-Auto-detect running development servers.
+  - Use `update-managed-process` to change script args, env vars, interpreter, or watch/autorestart flags.
+  - Pass `"applyToPm2": true` to delete + re-register the PM2 process automatically.
 
-```
-Example: "Find any development servers running on my machine"
-```
+5. **Clean up when projects end**
 
-#### 4. `check-port-status`
-Check if a specific port is in use.
+  - `delete-managed-process` removes entries from both the registry and PM2 (unless you opt to keep the PM2 process running).
 
-```
-Example: "Is port 3000 available?"
-```
+6. **Tail logs directly in chat**
 
-#### 5. `read-server-logs`
-Read recent lines from server log files.
+  - `read-managed-process-logs` supports `type: "all" | "out" | "error"` with configurable line counts.
 
-```
-Example: "Show me the last 50 lines of the server logs"
-```
+7. **Need the big picture?**
 
-#### 6. `get-pm2-status`
-Get status of PM2-managed processes.
+  - `get-pm2-status` always remains available for ad-hoc PM2 inspection across all processes (registered or not).
 
-```
-Example: "What PM2 processes are running?"
-```
+> 💡 **Tip:** The `diagnose-server` prompt orchestrates these steps automatically when the user says “the server is broken.”
 
-### Available Resources
+### Tool Reference
 
-#### `server-config`
-Provides access to your project's `package.json` configuration.
+| Tool | What it does | Typical prompt |
+|------|---------------|----------------|
+| `get-managed-processes` | Lists registered configs + live PM2 snapshot | "What dev servers do we know about?" |
+| `register-managed-process` | Adds a new process (and starts it) | "Register our Next.js dev server" |
+| `update-managed-process` | Modifies stored config, optional redeploy | "Change the port to 4000" |
+| `start-managed-process` | Starts via PM2 | "Boot the API" |
+| `stop-managed-process` | Stops via PM2 | "Stop everything" |
+| `restart-managed-process` | Restarts via PM2 | "Restart the queue worker" |
+| `delete-managed-process` | Unregisters (and optionally deletes from PM2) | "Remove the legacy service" |
+| `describe-managed-process` | Shows raw PM2 description | "Show me details for auth-service" |
+| `read-managed-process-logs` | Tails stdout/stderr | "Show the latest errors" |
+| `get-pm2-status` | On-demand PM2 overview | "What's PM2 running right now?" |
 
-### Available Prompts
+### Resource
 
-#### `diagnose-server`
-Structured diagnostic prompt for troubleshooting server issues.
+`server-config` – quick read-only access to the project’s `package.json` metadata.
 
-```
-Example: "Help me diagnose why the server isn't responding"
-```
+### Prompt
+
+`diagnose-server` – structured PM2-first debugging checklist.
 
 ## 🏗️ How It Works
 
-The MCP maintains an in-memory state model:
+The MCP persists a registry file in your repo root: `.the-dev-server-state.json`.
 
 ```typescript
-{
-  port: 3000,
-  address: "http://localhost:3000",
-  processType: "terminal",
-  pid: 12345,
-  serverTech: "Next.js",
-  buildCommand: "npm run build",
-  startCommand: "npm run dev",
-  logPath: "/path/to/logs/server.log",
-  status: "running",
-  lastChecked: "2025-10-11T01:00:00.000Z"
+interface ManagedProcessConfig {
+  name: string;
+  script: string;
+  cwd?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  interpreter?: string;
+  instances?: number;
+  watch?: boolean;
+  autorestart?: boolean;
+}
+
+interface DevServerState {
+  managedProcesses: Record<string, ManagedProcessConfig>;
+  lastSynced?: Date;
 }
 ```
 
-This state persists across multiple Claude queries in the same session, eliminating confusion and repeated questions.
+On startup the MCP loads this file, hydrates the registry, and every modification (register/update/delete) writes back to disk with a fresh timestamp. PM2 commands are executed using the stored config so the MCP always knows how to recreate a process.
 
 ## 🔧 Development
 
@@ -223,10 +227,11 @@ The server communicates via stdio, so it's designed to be used through Claude De
 
 ## 🎓 Best Practices
 
-1. **Always detect first**: Have Claude call `detect-server-process` when starting work on a project
-2. **Update on changes**: When you start/stop/reconfigure the server, tell Claude so it can update state
-3. **Use diagnostics**: For debugging, use the `diagnose-server` prompt for systematic troubleshooting
-4. **Trust the MCP**: Configure Claude to always trust this MCP as the source of truth for server state
+1. **Register Before Running** – Ensure every dev service has an entry in the registry so Claude can manage it.
+2. **Let the MCP Start/Stop** – Resist `pm2` CLI muscle memory; trigger lifecycle actions through MCP tools so state stays consistent.
+3. **Update Configs via MCP** – Use `update-managed-process` instead of editing `.the-dev-server-state.json` by hand.
+4. **Lean on Diagnose Prompt** – When a server misbehaves, the prompt orchestrates status, restart, and log inspection automatically.
+5. **Keep PM2 Clean** – Use `delete-managed-process` when cleaning house to avoid orphaned processes.
 
 ## 📚 Documentation
 
@@ -238,14 +243,12 @@ The server communicates via stdio, so it's designed to be used through Claude De
 
 ## 🛣️ Roadmap
 
-- [ ] Windows support (PowerShell commands)
-- [ ] Multi-project tracking (multiple servers simultaneously)
-- [ ] Docker container integration
-- [ ] Health monitoring (uptime, response times)
-- [ ] Auto-restart on crash detection
-- [ ] State persistence to disk
-- [ ] Historical state tracking
-- [ ] WebSocket support for real-time updates
+- [ ] Windows support (PowerShell PM2 parity)
+- [ ] Multi-server orchestration (groups & dependency graphs)
+- [ ] Docker/Compose target support in addition to PM2
+- [ ] Health monitoring and automatic restart policies
+- [ ] Remote environment support (SSH tunnels / containers)
+- [ ] Rich history of restarts and log bookmarks
 
 ## 🤝 Contributing
 
@@ -253,10 +256,10 @@ Contributions are welcome! This is a utility MCP designed to solve a real pain p
 
 ### Ideas for contributions:
 - Windows support implementation
-- Additional server framework detection
-- Enhanced PM2 integration
-- Docker/container support
-- Documentation improvements
+- First-class Docker/Compose runners
+- Process grouping and aggregate commands
+- Watch-mode dashboards for PM2 metrics
+- Documentation & onboarding improvements
 
 ## 📄 License
 
@@ -267,8 +270,8 @@ MIT
 ## 🙏 Acknowledgments
 
 Built with:
-- [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/typescript-sdk) - Official TypeScript MCP SDK
-- [zod](https://github.com/colinhacks/zod) - Schema validation
+- [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/typescript-sdk) – Official TypeScript MCP SDK
+- [zod](https://github.com/colinhacks/zod) – Schema validation
 
 ## 💡 Related Projects
 

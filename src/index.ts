@@ -3,32 +3,76 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { exec } from 'child_process';
+import { exec, ExecOptions } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
 const execAsync = promisify(exec);
 
-// Server state tracking
+const STATE_FILE = path.join(process.cwd(), '.the-dev-server-state.json');
+
+// PM2 management state
+interface ManagedProcessConfig {
+  name: string;
+  script: string;
+  cwd?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  interpreter?: string;
+  instances?: number;
+  watch?: boolean;
+  autorestart?: boolean;
+}
+
 interface DevServerState {
-  port?: number;
-  address?: string;
-  processType?: 'terminal' | 'pm2' | 'background' | 'unknown';
-  pid?: number;
-  serverTech?: string;
-  buildCommand?: string;
-  startCommand?: string;
-  logPath?: string;
-  status: 'running' | 'stopped' | 'unknown';
-  lastChecked?: Date;
-  projectPath?: string;
-  projectName?: string;
+  managedProcesses: Record<string, ManagedProcessConfig>;
+  lastSynced?: Date;
 }
 
 let serverState: DevServerState = {
-  status: 'unknown'
+  managedProcesses: {}
 };
+
+async function loadState(): Promise<void> {
+  try {
+    const data = await fs.readFile(STATE_FILE, 'utf-8');
+    const parsed = JSON.parse(data) as DevServerState;
+    serverState = {
+      managedProcesses: parsed.managedProcesses || {},
+      lastSynced: parsed.lastSynced ? new Date(parsed.lastSynced) : undefined
+    };
+  } catch (error) {
+    // State file missing or unreadable; start fresh
+    serverState = { managedProcesses: {} };
+  }
+}
+
+async function persistState(): Promise<void> {
+  const serialized = JSON.stringify(
+    {
+      ...serverState,
+      lastSynced: new Date().toISOString()
+    },
+    null,
+    2
+  );
+  await fs.writeFile(STATE_FILE, serialized, 'utf-8');
+}
+
+async function runPm2(command: string, options: ExecOptions = {}) {
+  const execOptions: ExecOptions & { encoding: BufferEncoding } = {
+    ...(options as ExecOptions),
+    encoding: 'utf8' as BufferEncoding,
+    env: {
+      ...process.env,
+      ...(options.env || {})
+    }
+  };
+
+  const { stdout } = await execAsync(command, execOptions);
+  return stdout as string;
+}
 
 const server = new McpServer({
   name: 'the-dev-server',
@@ -40,61 +84,83 @@ const server = new McpServer({
   }
 },
 {
-  instructions: `CRITICAL: ALWAYS use this MCP for ANY question about development servers, ports, or processes.
+  instructions: `CRITICAL: ALWAYS use this MCP to manage development servers via PM2.
 
 FIRST TIME with a project:
-1. Call detect-server-process() to discover running servers
-2. Call get-server-state() to see what's tracked
+1. Register every dev process with register-managed-process()
+2. Review registered processes with get-managed-processes()
 
-WHEN USER ASKS about server:
-1. ALWAYS call get-server-state() first
-2. Report port, status, project location, and process type
-3. If state is old/unknown, call detect-server-process()
-
-WHEN USER STARTS/STOPS SERVER:
-- Immediately call update-server-state() with the new information
+WHEN USER ASKS about server state:
+1. Call get-managed-processes() to inspect PM2 status
+2. Start or stop processes with start-managed-process() / stop-managed-process()
+3. Update configuration with update-managed-process()
 
 WHEN DEBUGGING:
 - Use the diagnose-server prompt for systematic troubleshooting
-- Call read-server-logs() to see recent errors
+- Tail logs with read-managed-process-logs()
 
-NEVER assume port numbers, status, or locations. ALWAYS query this MCP first.`
+NEVER bypass PM2. ALWAYS manage processes through this MCP.`
 });
 
 /**
- * Tool: get-server-state
- * Returns the current known state of the development server
+ * Tool: get-managed-processes
+ * Returns tracked PM2-managed processes and their status
  */
 server.registerTool(
-  'get-server-state',
+  'get-managed-processes',
   {
-    title: 'Get Dev Server State',
-    description: 'Get the current state of the development server including port, process type, and status',
+    title: 'List Managed Processes',
+    description: 'List all processes registered with this MCP and their PM2 status',
     inputSchema: {},
     outputSchema: {
-      status: z.enum(['running', 'stopped', 'unknown']),
-      port: z.number().optional(),
-      address: z.string().optional(),
-      processType: z.enum(['terminal', 'pm2', 'background', 'unknown']).optional(),
-      pid: z.number().optional(),
-      serverTech: z.string().optional(),
-      buildCommand: z.string().optional(),
-      startCommand: z.string().optional(),
-      logPath: z.string().optional(),
-      lastChecked: z.string().optional(),
-      projectPath: z.string().optional(),
-      projectName: z.string().optional()
+      tracked: z.array(z.object({
+        name: z.string(),
+        script: z.string(),
+        cwd: z.string().optional(),
+        args: z.array(z.string()).optional(),
+        env: z.record(z.string()).optional(),
+        interpreter: z.string().optional(),
+        instances: z.number().optional(),
+        watch: z.boolean().optional(),
+        autorestart: z.boolean().optional()
+      })),
+      pm2: z.array(z.object({
+        name: z.string(),
+        pid: z.number(),
+        status: z.string(),
+        cpu: z.string(),
+        memory: z.string()
+      })),
+      lastSynced: z.string().optional()
     }
   },
   async () => {
+    await loadState();
+
+    let pm2Processes: Array<{ name: string; pid: number; status: string; cpu: string; memory: string }> = [];
+    try {
+      const stdout = await runPm2('pm2 jlist');
+      const parsed = JSON.parse(stdout);
+      pm2Processes = parsed.map((p: any) => ({
+        name: p.name,
+        pid: p.pid,
+        status: p.pm2_env.status,
+        cpu: `${p.monit.cpu}%`,
+        memory: `${Math.round(p.monit.memory / 1024 / 1024)}MB`
+      }));
+    } catch (error) {
+      // PM2 not available; return empty array
+    }
+
     const output = {
-      ...serverState,
-      lastChecked: serverState.lastChecked?.toISOString()
+      tracked: Object.values(serverState.managedProcesses),
+      pm2: pm2Processes,
+      lastSynced: serverState.lastSynced?.toISOString()
     };
     return {
       content: [{ 
         type: 'text', 
-        text: `Dev Server State:\n${JSON.stringify(output, null, 2)}` 
+        text: `Managed Processes (tracked vs PM2 state):\n${JSON.stringify(output, null, 2)}` 
       }],
       structuredContent: output
     };
@@ -102,73 +168,72 @@ server.registerTool(
 );
 
 /**
- * Tool: update-server-state
- * Updates the tracked state of the development server
+ * Tool: register-managed-process
+ * Registers a new PM2-managed process with optional auto-start
  */
 server.registerTool(
-  'update-server-state',
+  'register-managed-process',
   {
-    title: 'Update Dev Server State',
-    description: 'Update the tracked state of the development server with new information',
+    title: 'Register Managed Process',
+    description: 'Register a new development process to be managed via PM2',
     inputSchema: {
-      port: z.number().optional().describe('The port number the server is running on'),
-      address: z.string().optional().describe('The full address (e.g., http://localhost:3000)'),
-      processType: z.enum(['terminal', 'pm2', 'background', 'unknown']).optional().describe('How the server process is running'),
-      pid: z.number().optional().describe('The process ID'),
-      serverTech: z.string().optional().describe('The server technology (e.g., Express, Next.js, Vite)'),
-      buildCommand: z.string().optional().describe('Command to build the project'),
-      startCommand: z.string().optional().describe('Command to start the server'),
-      logPath: z.string().optional().describe('Path to the log file'),
-      status: z.enum(['running', 'stopped', 'unknown']).optional().describe('Current server status'),
-      projectPath: z.string().optional().describe('Full path to the project directory'),
-      projectName: z.string().optional().describe('Name of the project')
+      name: z.string().describe('Unique PM2 process name'),
+      script: z.string().describe('Command or script to run'),
+      cwd: z.string().optional().describe('Working directory for the process'),
+      args: z.array(z.string()).optional().describe('Arguments passed to the script'),
+      env: z.record(z.string()).optional().describe('Environment variables for the process'),
+      interpreter: z.string().optional().describe('Interpreter to use (e.g., node, python)'),
+      instances: z.number().optional().describe('Number of instances for PM2 cluster mode'),
+      watch: z.boolean().optional().describe('Enable PM2 watch mode'),
+      autorestart: z.boolean().optional().describe('Enable PM2 autorestart'),
+      startImmediately: z.boolean().optional().default(true).describe('Start the process right after registration')
     },
     outputSchema: {
       success: z.boolean(),
-      updatedState: z.object({
-        status: z.enum(['running', 'stopped', 'unknown']),
-        port: z.number().optional(),
-        address: z.string().optional(),
-        processType: z.enum(['terminal', 'pm2', 'background', 'unknown']).optional(),
-        pid: z.number().optional(),
-        serverTech: z.string().optional(),
-        buildCommand: z.string().optional(),
-        startCommand: z.string().optional(),
-        logPath: z.string().optional(),
-        projectPath: z.string().optional(),
-        projectName: z.string().optional()
+      managedProcess: z.object({
+        name: z.string(),
+        script: z.string(),
+        cwd: z.string().optional(),
+        args: z.array(z.string()).optional(),
+        env: z.record(z.string()).optional(),
+        interpreter: z.string().optional(),
+        instances: z.number().optional(),
+        watch: z.boolean().optional(),
+        autorestart: z.boolean().optional()
       })
     }
   },
-  async (params) => {
-    // Update only the provided fields
-    serverState = {
-      ...serverState,
-      ...params,
-      lastChecked: new Date()
+  async ({ startImmediately = true, ...params }) => {
+    await loadState();
+
+    const config: ManagedProcessConfig = {
+      name: params.name,
+      script: params.script,
+      cwd: params.cwd,
+      args: params.args,
+      env: params.env,
+      interpreter: params.interpreter,
+      instances: params.instances,
+      watch: params.watch,
+      autorestart: params.autorestart
     };
+
+    serverState.managedProcesses[config.name] = config;
+    await persistState();
+
+    if (startImmediately) {
+      await startPm2Process(config);
+    }
 
     const output = {
       success: true,
-      updatedState: {
-        status: serverState.status,
-        port: serverState.port,
-        address: serverState.address,
-        processType: serverState.processType,
-        pid: serverState.pid,
-        serverTech: serverState.serverTech,
-        buildCommand: serverState.buildCommand,
-        startCommand: serverState.startCommand,
-        logPath: serverState.logPath,
-        projectPath: serverState.projectPath,
-        projectName: serverState.projectName
-      }
+      managedProcess: config
     };
 
     return {
-      content: [{ 
-        type: 'text', 
-        text: `Updated dev server state:\n${JSON.stringify(output.updatedState, null, 2)}` 
+      content: [{
+        type: 'text',
+        text: `Registered process ${config.name}${startImmediately ? ' and started it via PM2.' : '.'}`
       }],
       structuredContent: output
     };
@@ -176,248 +241,362 @@ server.registerTool(
 );
 
 /**
- * Tool: detect-server-process
- * Attempts to auto-detect running development server processes
+ * Tool: update-managed-process
+ * Update configuration of an existing managed process
  */
 server.registerTool(
-  'detect-server-process',
+  'update-managed-process',
   {
-    title: 'Detect Server Process',
-    description: 'Automatically detect running development server processes and their details',
+    title: 'Update Managed Process',
+    description: 'Update the stored configuration for a managed process',
     inputSchema: {
-      workingDirectory: z.string().optional().describe('Working directory to check for server processes')
-    },
-    outputSchema: {
-      detected: z.boolean(),
-      processes: z.array(z.object({
-        pid: z.number(),
-        port: z.number().optional(),
-        command: z.string(),
-        type: z.enum(['terminal', 'pm2', 'background']),
-        projectPath: z.string().optional(),
-        projectName: z.string().optional()
-      }))
-    }
-  },
-  async ({ workingDirectory }) => {
-    const processes: Array<{
-      pid: number;
-      port?: number;
-      command: string;
-      type: 'terminal' | 'pm2' | 'background';
-      projectPath?: string;
-      projectName?: string;
-    }> = [];
-
-    try {
-      // Check for common dev server processes
-      const commonPorts = [3000, 3001, 4200, 5000, 5173, 8080, 8000, 9000];
-      
-      for (const port of commonPorts) {
-        try {
-          const { stdout } = await execAsync(`lsof -i :${port} -t 2>/dev/null || true`);
-          const pid = stdout.trim();
-          
-          if (pid) {
-            const { stdout: psOutput } = await execAsync(`ps -p ${pid} -o command= 2>/dev/null || true`);
-            const command = psOutput.trim();
-            
-            if (command) {
-              // Determine process type
-              let type: 'terminal' | 'pm2' | 'background' = 'background';
-              if (command.includes('node') && !command.includes('pm2')) {
-                type = 'terminal';
-              } else if (command.includes('pm2')) {
-                type = 'pm2';
-              }
-              
-              // Get project path using lsof
-              let projectPath: string | undefined;
-              let projectName: string | undefined;
-              try {
-                const { stdout: lsofOutput } = await execAsync(`lsof -p ${pid} | grep cwd | awk '{print $NF}' 2>/dev/null || true`);
-                projectPath = lsofOutput.trim();
-                if (projectPath) {
-                  projectName = projectPath.split('/').pop();
-                }
-              } catch (err) {
-                // Could not get project path
-              }
-              
-              processes.push({
-                pid: parseInt(pid),
-                port,
-                command,
-                type,
-                projectPath,
-                projectName
-              });
-            }
-          }
-        } catch (err) {
-          // Skip if port is not in use
-        }
-      }
-
-      // Update server state if we found something
-      if (processes.length > 0) {
-        const mainProcess = processes[0];
-        serverState = {
-          ...serverState,
-          pid: mainProcess.pid,
-          port: mainProcess.port,
-          address: mainProcess.port ? `http://localhost:${mainProcess.port}` : undefined,
-          processType: mainProcess.type,
-          status: 'running',
-          lastChecked: new Date(),
-          projectPath: mainProcess.projectPath,
-          projectName: mainProcess.projectName
-        };
-      }
-    } catch (error) {
-      // Detection failed, return empty results
-    }
-
-    const output = {
-      detected: processes.length > 0,
-      processes
-    };
-
-    return {
-      content: [{ 
-        type: 'text', 
-        text: `Detected ${processes.length} dev server process(es):\n${JSON.stringify(output, null, 2)}` 
-      }],
-      structuredContent: output
-    };
-  }
-);
-
-/**
- * Tool: check-port-status
- * Check if a specific port is in use
- */
-server.registerTool(
-  'check-port-status',
-  {
-    title: 'Check Port Status',
-    description: 'Check if a specific port is in use and get process information',
-    inputSchema: {
-      port: z.number().describe('Port number to check')
-    },
-    outputSchema: {
-      inUse: z.boolean(),
-      pid: z.number().optional(),
-      command: z.string().optional()
-    }
-  },
-  async ({ port }) => {
-    try {
-      const { stdout } = await execAsync(`lsof -i :${port} -t 2>/dev/null || true`);
-      const pid = stdout.trim();
-      
-      if (pid) {
-        const { stdout: psOutput } = await execAsync(`ps -p ${pid} -o command= 2>/dev/null || true`);
-        const command = psOutput.trim();
-        
-        const output = {
-          inUse: true,
-          pid: parseInt(pid),
-          command
-        };
-
-        return {
-          content: [{ 
-            type: 'text', 
-            text: `Port ${port} is in use by PID ${pid}:\n${command}` 
-          }],
-          structuredContent: output
-        };
-      }
-    } catch (error) {
-      // Port not in use
-    }
-
-    const output = {
-      inUse: false
-    };
-
-    return {
-      content: [{ 
-        type: 'text', 
-        text: `Port ${port} is not in use` 
-      }],
-      structuredContent: output
-    };
-  }
-);
-
-/**
- * Tool: read-server-logs
- * Read the most recent server logs
- */
-server.registerTool(
-  'read-server-logs',
-  {
-    title: 'Read Server Logs',
-    description: 'Read the most recent lines from the server log file',
-    inputSchema: {
-      logPath: z.string().optional().describe('Path to the log file (uses tracked path if not provided)'),
-      lines: z.number().optional().default(50).describe('Number of recent lines to read')
+      name: z.string().describe('Name of the managed process to update'),
+      script: z.string().optional(),
+      cwd: z.string().optional(),
+      args: z.array(z.string()).optional(),
+      env: z.record(z.string()).optional(),
+      interpreter: z.string().optional(),
+      instances: z.number().optional(),
+      watch: z.boolean().optional(),
+      autorestart: z.boolean().optional(),
+      applyToPm2: z.boolean().optional().default(false).describe('Restart process with new settings immediately via PM2')
     },
     outputSchema: {
       success: z.boolean(),
-      logs: z.string().optional(),
-      error: z.string().optional()
+      managedProcess: z.object({
+        name: z.string(),
+        script: z.string(),
+        cwd: z.string().optional(),
+        args: z.array(z.string()).optional(),
+        env: z.record(z.string()).optional(),
+        interpreter: z.string().optional(),
+        instances: z.number().optional(),
+        watch: z.boolean().optional(),
+        autorestart: z.boolean().optional()
+      })
     }
   },
-  async ({ logPath, lines = 50 }) => {
-    const pathToRead = logPath || serverState.logPath;
-    
-    if (!pathToRead) {
-      const output = {
-        success: false,
-        error: 'No log path specified or tracked'
-      };
-      return {
-        content: [{ 
-          type: 'text', 
-          text: 'Error: No log path specified or tracked' 
-        }],
-        structuredContent: output
-      };
+  async ({ name, applyToPm2 = false, ...updates }) => {
+    await loadState();
+
+    const existing = serverState.managedProcesses[name];
+    if (!existing) {
+      throw new Error(`Managed process '${name}' is not registered. Use register-managed-process first.`);
     }
 
-    try {
-      const { stdout } = await execAsync(`tail -n ${lines} "${pathToRead}" 2>/dev/null || true`);
-      
-      const output = {
-        success: true,
-        logs: stdout
-      };
+    const updated: ManagedProcessConfig = {
+      ...existing,
+      ...updates,
+      name
+    };
 
-      return {
-        content: [{ 
-          type: 'text', 
-          text: `Recent logs from ${pathToRead}:\n\n${stdout}` 
-        }],
-        structuredContent: output
-      };
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-      const output = {
-        success: false,
-        error: errorMsg
-      };
+    serverState.managedProcesses[name] = updated;
+    await persistState();
 
-      return {
-        content: [{ 
-          type: 'text', 
-          text: `Error reading logs: ${errorMsg}` 
-        }],
-        structuredContent: output
-      };
+    if (applyToPm2) {
+      // Restart process with new configuration
+      await deletePm2Process(name);
+      await startPm2Process(updated);
     }
+
+    const output = {
+      success: true,
+      managedProcess: updated
+    };
+
+    return {
+      content: [{
+        type: 'text',
+        text: `Updated process ${name}${applyToPm2 ? ' and applied changes via PM2.' : '.'}`
+      }],
+      structuredContent: output
+    };
+  }
+);
+
+/**
+ * Helper: start process via PM2 using stored configuration
+ */
+async function startPm2Process(config: ManagedProcessConfig) {
+  const parts = ['pm2', 'start', config.script, '--name', config.name];
+
+  if (config.interpreter) {
+    parts.push('--interpreter', config.interpreter);
+  }
+  if (config.cwd) {
+    parts.push('--cwd', config.cwd);
+  }
+  if (config.instances && config.instances > 0) {
+    parts.push('-i', String(config.instances));
+  }
+  if (config.watch === true) {
+    parts.push('--watch');
+  }
+  if (config.watch === false) {
+    parts.push('--no-watch');
+  }
+  if (config.autorestart === false) {
+    parts.push('--no-autorestart');
+  }
+
+  if (config.args && config.args.length > 0) {
+    parts.push('--', ...config.args);
+  }
+
+  return runPm2(parts.join(' '), {
+    cwd: config.cwd,
+    env: {
+      ...(config.env || {})
+    }
+  });
+}
+
+async function deletePm2Process(name: string) {
+  try {
+    await runPm2(`pm2 delete ${name}`);
+  } catch (error) {
+    // Ignore if process not found
+  }
+}
+
+async function stopPm2Process(name: string) {
+  try {
+    await runPm2(`pm2 stop ${name}`);
+  } catch (error) {
+    // Ignore if process not found
+  }
+}
+
+async function restartPm2Process(name: string) {
+  return runPm2(`pm2 restart ${name}`);
+}
+
+async function describePm2Process(name: string) {
+  const stdout = await runPm2(`pm2 describe ${name}`);
+  return stdout;
+}
+
+/**
+ * Tool: start-managed-process
+ * Starts a registered process via PM2
+ */
+server.registerTool(
+  'start-managed-process',
+  {
+    title: 'Start Managed Process',
+    description: 'Start a registered process via PM2',
+    inputSchema: {
+      name: z.string().describe('Name of the managed process to start')
+    },
+    outputSchema: {
+      success: z.boolean(),
+      pm2: z.string()
+    }
+  },
+  async ({ name }) => {
+    await loadState();
+    const config = serverState.managedProcesses[name];
+    if (!config) {
+      throw new Error(`Managed process '${name}' is not registered. Use register-managed-process first.`);
+    }
+
+    await startPm2Process(config);
+    const output = {
+      success: true,
+      pm2: 'Started'
+    };
+
+    return {
+      content: [{
+        type: 'text',
+        text: `Started process ${name} via PM2.`
+      }],
+      structuredContent: output
+    };
+  }
+);
+
+/**
+ * Tool: stop-managed-process
+ * Stops a managed process via PM2
+ */
+server.registerTool(
+  'stop-managed-process',
+  {
+    title: 'Stop Managed Process',
+    description: 'Stop a PM2 process managed by this MCP',
+    inputSchema: {
+      name: z.string().describe('Name of the process to stop')
+    },
+    outputSchema: {
+      success: z.boolean()
+    }
+  },
+  async ({ name }) => {
+    await stopPm2Process(name);
+    const output = {
+      success: true
+    };
+
+    return {
+      content: [{
+        type: 'text',
+        text: `Stopped process ${name} via PM2.`
+      }],
+      structuredContent: output
+    };
+  }
+);
+
+/**
+ * Tool: restart-managed-process
+ * Restarts a managed process via PM2
+ */
+server.registerTool(
+  'restart-managed-process',
+  {
+    title: 'Restart Managed Process',
+    description: 'Restart a PM2 process managed by this MCP',
+    inputSchema: {
+      name: z.string().describe('Name of the process to restart')
+    },
+    outputSchema: {
+      success: z.boolean(),
+      pm2: z.string()
+    }
+  },
+  async ({ name }) => {
+    await restartPm2Process(name);
+    const output = {
+      success: true,
+      pm2: 'Restarted'
+    };
+
+    return {
+      content: [{
+        type: 'text',
+        text: `Restarted process ${name} via PM2.`
+      }],
+      structuredContent: output
+    };
+  }
+);
+
+/**
+ * Tool: delete-managed-process
+ * Unregisters and removes a process from PM2
+ */
+server.registerTool(
+  'delete-managed-process',
+  {
+    title: 'Delete Managed Process',
+    description: 'Delete a managed process from PM2 and remove it from tracking',
+    inputSchema: {
+      name: z.string().describe('Name of the process to delete'),
+      deleteFromPm2: z.boolean().optional().default(true).describe('Remove the process from PM2 as well')
+    },
+    outputSchema: {
+      success: z.boolean()
+    }
+  },
+  async ({ name, deleteFromPm2 = true }) => {
+    await loadState();
+
+    if (deleteFromPm2) {
+      await deletePm2Process(name);
+    }
+
+    delete serverState.managedProcesses[name];
+    await persistState();
+
+    const output = {
+      success: true
+    };
+
+    return {
+      content: [{
+        type: 'text',
+        text: `Deleted process ${name} from tracking${deleteFromPm2 ? ' and PM2.' : '.'}`
+      }],
+      structuredContent: output
+    };
+  }
+);
+
+/**
+ * Tool: describe-managed-process
+ * Provide detailed PM2 description for a managed process
+ */
+server.registerTool(
+  'describe-managed-process',
+  {
+    title: 'Describe Managed Process',
+    description: 'Get detailed PM2 information about a process',
+    inputSchema: {
+      name: z.string().describe('Name of the process to describe')
+    },
+    outputSchema: {
+      success: z.boolean(),
+      description: z.string()
+    }
+  },
+  async ({ name }) => {
+    const description = await describePm2Process(name);
+    const output = {
+      success: true,
+      description
+    };
+
+    return {
+      content: [{
+        type: 'text',
+        text: description
+      }],
+      structuredContent: output
+    };
+  }
+);
+
+/**
+ * Tool: read-managed-process-logs
+ * Tail logs for a PM2-managed process
+ */
+server.registerTool(
+  'read-managed-process-logs',
+  {
+    title: 'Read Managed Process Logs',
+    description: 'Tail the logs for a managed PM2 process',
+    inputSchema: {
+      name: z.string().describe('Process name'),
+      lines: z.number().optional().default(50).describe('Number of log lines to read'),
+      type: z.enum(['all', 'out', 'error']).optional().default('all').describe('Log stream to read')
+    },
+    outputSchema: {
+      success: z.boolean(),
+      logs: z.string()
+    }
+  },
+  async ({ name, lines = 50, type = 'all' }) => {
+    let command = `pm2 logs ${name} --lines ${lines} --nostream`;
+    if (type === 'out') {
+      command += ' --out';
+    } else if (type === 'error') {
+      command += ' --err';
+    }
+
+    const logs = await runPm2(command);
+    const output = {
+      success: true,
+      logs
+    };
+
+    return {
+      content: [{
+        type: 'text',
+        text: logs
+      }],
+      structuredContent: output
+    };
   }
 );
 
@@ -446,7 +625,7 @@ server.registerTool(
   },
   async ({ processName }) => {
     try {
-      const { stdout } = await execAsync('pm2 jlist 2>/dev/null');
+      const stdout = await runPm2('pm2 jlist');
       const processes = JSON.parse(stdout);
       
       const filtered = processName 
@@ -551,14 +730,14 @@ server.registerPrompt(
     messages: [
       {
         role: 'user',
-        content: {
-          type: 'text',
-          text: `Please help diagnose this development server issue: ${issue || 'Server not responding'}\n\nCheck the following:
-1. Is the server process running? (use detect-server-process)
-2. What port is it supposed to be on? (use get-server-state)
-3. Is that port accessible? (use check-port-status)
-4. Are there any errors in the logs? (use read-server-logs)
-5. If using PM2, what's the PM2 status? (use get-pm2-status)
+            content: {
+              type: 'text',
+              text: `Please help diagnose this development server issue: ${issue || 'Server not responding'}\n\nCheck the following:
+1. Is the process registered? (use get-managed-processes)
+2. Does PM2 report it as running? (use get-pm2-status)
+3. Can you start or restart it? (use start-managed-process or restart-managed-process)
+4. Are there any errors in the logs? (use read-managed-process-logs)
+5. Does the configuration look correct? (use describe-managed-process)
 
 Provide a comprehensive diagnosis and recommended next steps.`
         }
@@ -569,6 +748,7 @@ Provide a comprehensive diagnosis and recommended next steps.`
 
 // Start the server
 async function main() {
+  await loadState();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   

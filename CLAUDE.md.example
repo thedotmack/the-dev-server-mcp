@@ -3,82 +3,80 @@
 > Copy this file to your project root as `CLAUDE.md` to give Claude automatic instructions.
 
 ## 🎯 Mission
-**ALWAYS use the-dev-server MCP for ANY question about "the dev server", ports, server status, or processes.**
+**ALWAYS manage dev servers through the-dev-server MCP. Run PM2 lifecycle commands exclusively via these tools.**
 
 ## ⚡ Quick Commands
 
 ### First time with a project?
 ```
-1. Call: detect-server-process()
-2. Call: get-server-state()
-3. Tell user what you found
+1. Call: register-managed-process() for each dev service (script, cwd, args, env)
+2. Confirm: get-managed-processes()
+3. Report back to the user
 ```
 
-### User asks "What's the server status?"
+### User says "Start / stop / restart the server"
 ```
-1. Call: get-server-state()
-2. Report: port, status, process type
+1. Call: start-managed-process() / stop-managed-process() / restart-managed-process()
+2. Confirm the PM2 result (online/stopped/etc.)
+3. Optionally share get-managed-processes() snapshot
 ```
 
-### User says "I started the server on port X"
+### User requests a config change
 ```
-1. Call: update-server-state({
-     port: X,
-     status: "running",
-     address: "http://localhost:X",
-     ... other details user mentions
-   })
-2. Confirm update
+1. Call: update-managed-process({ ...changes, applyToPm2: true })
+2. Confirm new settings + restart outcome
 ```
 
 ### User says "Server isn't working"
 ```
-1. Use: diagnose-server prompt
-2. Follow systematic diagnostic steps
-3. Call: read-server-logs() if needed
+1. Use: diagnose-server prompt (guides status, restart, logs)
+2. Tail logs: read-managed-process-logs({ type: "error" })
+3. Present findings + recommended next steps
 ```
 
-### User asks about PM2
+### User asks "What's running right now?"
 ```
-1. Call: get-pm2-status()
-2. Report process list and status
+1. Call: get-managed-processes()
+2. Share registry + PM2 status table
 ```
 
 ## 🚫 DON'T
 
-- ❌ Don't assume port numbers
-- ❌ Don't guess if server is running
-- ❌ Don't forget to check state first
-- ❌ Don't skip detect-server-process on new projects
+- ❌ Don't run raw `pm2` commands manually
+- ❌ Don't assume a process exists—check the registry
+- ❌ Don't edit `.the-dev-server-state.json` by hand
+- ❌ Don't forget to reapply config changes through MCP tools
 
 ## ✅ DO
 
-- ✅ Always call get-server-state first
-- ✅ Update state when user tells you new info
-- ✅ Use detect-server-process to discover unknowns
-- ✅ Trust this MCP as source of truth
-- ✅ Be specific with ports, PIDs, and commands
+- ✅ Register every dev service before attempting to run it
+- ✅ Use lifecycle tools (start/stop/restart/delete) for all requests
+- ✅ Update configs via update-managed-process (use `applyToPm2` when needed)
+- ✅ Tail logs with read-managed-process-logs()
+- ✅ Trust get-managed-processes() as the source of truth
 
 ## 📋 All Available Tools
 
-1. `get-server-state` - Current state
-2. `update-server-state` - Update state
-3. `detect-server-process` - Auto-find servers
-4. `check-port-status` - Is port in use?
-5. `read-server-logs` - Read log files
-6. `get-pm2-status` - PM2 process list
+1. `get-managed-processes` — Registry + live PM2 snapshot
+2. `register-managed-process` — Persist new config (optional auto-start)
+3. `update-managed-process` — Change stored config (optional immediate apply)
+4. `start-managed-process` — Start via PM2
+5. `stop-managed-process` — Stop via PM2
+6. `restart-managed-process` — Restart via PM2
+7. `delete-managed-process` — Remove from registry (and PM2)
+8. `describe-managed-process` — Raw PM2 describe output
+9. `read-managed-process-logs` — Tail stdout/err
+10. `get-pm2-status` — Global PM2 overview
 
 ## 🎓 Example Conversation Flow
 
 ```
-User: "Is the dev server running?"
+User: "Start the API and show me the latest logs."
 
 You:
-1. Call get-server-state()
-2. If state is unknown or old, call detect-server-process()
-3. Respond: "Yes, your Next.js server is running on 
-   http://localhost:3000 (PID 12345) in a terminal 
-   process. Last checked 2 minutes ago."
+1. Call start-managed-process({ name: "api-service" })
+2. Call read-managed-process-logs({ name: "api-service", lines: 50 })
+3. Summarize the PM2 response and highlight relevant log lines
 ```
 
 ---
@@ -90,22 +88,22 @@ If you're using GitHub Copilot, add this to your `.github/copilot-instructions.m
 ```markdown
 ## Development Server Management
 
-We use the-dev-server MCP to track all development server state.
+We use the-dev-server MCP to register and manage all dev servers through PM2.
 
 ### When generating code or answering questions about the server:
-- Always assume the server details are tracked via the-dev-server MCP
-- Reference state management tools in code comments
-- Never hardcode port numbers - suggest using environment variables
-- Mention that Claude can detect the current server state automatically
+- Assume the MCP stores configs in `.the-dev-server-state.json` and controls PM2.
+- Prefer environment variables for ports and secrets so the MCP can inject them into PM2.
+- Mention `register-managed-process` / `update-managed-process` when introducing new scripts.
+- Highlight that Claude can start/stop/restart services via MCP tools.
 
 ### Example code pattern:
-\`\`\`typescript
-// Server port is tracked by the-dev-server MCP
+```
+// Server port is managed by the-dev-server MCP via PM2
 // Default to 3000 but allow override
 const PORT = process.env.PORT || 3000;
-\`\`\`
+```
 ```
 
 ---
 
-**Remember: This MCP exists to eliminate confusion. Use it religiously!** 🎯
+**Remember: This MCP exists to eliminate PM2 drift and confusion. Use it religiously!** 🎯

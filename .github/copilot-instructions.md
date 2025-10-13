@@ -1,24 +1,24 @@
 # Copilot Instructions for the-dev-server MCP
 
 ## Project Overview
-This is a TypeScript-based Model Context Protocol (MCP) server called "the-dev-server" that helps Claude understand and manage development server state. It tracks port numbers, process types, project locations, and provides automatic server detection.
+This TypeScript-based Model Context Protocol (MCP) server turns Claude into the PM2 control plane for development servers. Instead of detecting ad-hoc processes, it persists a registry of managed process configurations, executes lifecycle commands (start/stop/restart/delete) through PM2, and exposes tools for viewing status, logs, and configuration drift.
 
 ## Current Status
 - [x] ✅ Verified copilot-instructions.md file in .github directory
-- [x] ✅ Project requirements clarified (MCP for dev server state tracking)
+- [x] ✅ Project requirements clarified (MCP-driven PM2 orchestration)
 - [x] ✅ Project scaffolded with TypeScript MCP template structure
-- [x] ✅ Customized with 6 tools, 1 resource, 1 prompt for dev server management
-- [x] ✅ Enhanced with project location tracking (projectPath, projectName)
+- [x] ✅ Customized with 10 PM2-focused tools, 1 resource, 1 prompt
+- [x] ✅ Persistent registry stored in `.the-dev-server-state.json`
 - [x] ✅ Embedded instructions added to MCP server initialization
 - [x] ✅ Extensions not required (standard TypeScript project)
-- [x] ✅ Project compiled successfully (npm install && npm run build)
-- [x] ✅ Task creation not needed (MCP runs via stdio, not a typical build/run task)
-- [x] ✅ Launch not applicable (MCP is configured in Claude Desktop config)
+- [x] ✅ Project compiled successfully (`npm install && npm run build`)
+- [x] ✅ Task creation not needed (MCP runs via stdio)
+- [x] ✅ Launch not applicable (configured in Claude Desktop config)
 - [x] ✅ Documentation complete (README.md, HOW-IT-WORKS.lock.md, CLAUDE.md.example, .clinerules.example)
 
 ## Project Structure
 ```
-the-dev-server-mcp/
+
 ├── .github/
 │   └── copilot-instructions.md      # This file
 ├── src/
@@ -28,19 +28,18 @@ the-dev-server-mcp/
 │   └── index.d.ts                   # Type definitions
 ├── package.json                     # Dependencies & scripts
 ├── tsconfig.json                    # TypeScript configuration
-├── README.md                        # User-facing documentation (styled)
-├── HOW-IT-WORKS.lock.md            # Comprehensive truth guide
-├── STARTUP-INSTRUCTIONS.md         # Guide for adding instructions
-├── CLAUDE.md.example               # Claude instruction template
-├── .clinerules.example             # CLI AI assistant template
-└── .gitignore                      # Git ignore rules
+├── README.md                        # User-facing documentation
+├── HOW-IT-WORKS.lock.md             # Comprehensive truth guide
+├── CLAUDE.md.example                # Claude instruction template
+├── .clinerules.example              # CLI AI assistant template
+└── .gitignore                       # Git ignore rules
 ```
 
 ## Development Commands
-- `npm install` - Install dependencies
-- `npm run build` - Compile TypeScript to JavaScript
-- `npm run watch` - Watch mode for development
-- `node build/index.js` - Run the MCP server directly (stdio mode)
+- `npm install` – Install dependencies
+- `npm run build` – Compile TypeScript to JavaScript
+- `npm run watch` – Build in watch mode
+- `node build/index.js` – Run the MCP server directly (stdio mode)
 
 ## Integration with Claude Desktop
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
@@ -57,97 +56,96 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ## Key Features Implemented
 
-### Tools (6)
-1. **get-server-state** - Retrieve current tracked state
-2. **update-server-state** - Update state with new information
-3. **detect-server-process** - Auto-detect running dev servers (scans ports 3000-9000)
-4. **check-port-status** - Check if a specific port is in use
-5. **read-server-logs** - Read server log files
-6. **get-pm2-status** - Query PM2 process manager
+### Tools (10)
+1. **get-managed-processes** – Registry snapshot + live PM2 metadata
+2. **register-managed-process** – Persist new process config (optional auto-start)
+3. **update-managed-process** – Mutate stored config (optional apply to PM2)
+4. **start-managed-process** – Launch via PM2 using stored config
+5. **stop-managed-process** – Stop PM2 process
+6. **restart-managed-process** – Restart PM2 process
+7. **delete-managed-process** – Remove from registry (and optionally PM2)
+8. **describe-managed-process** – PM2 describe output for a specific process
+9. **read-managed-process-logs** – Tail stdout/err via PM2 logs
+10. **get-pm2-status** – Global PM2 process overview
 
 ### Resource (1)
-- **server-config** - Access to package.json configuration
+- **server-config** – Read-only access to `package.json` metadata
 
 ### Prompt (1)
-- **diagnose-server** - Structured debugging workflow
+- **diagnose-server** – PM2-centric troubleshooting workflow
 
 ### State Model
 ```typescript
+interface ManagedProcessConfig {
+  name: string;
+  script: string;
+  cwd?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  interpreter?: string;
+  instances?: number;
+  watch?: boolean;
+  autorestart?: boolean;
+}
+
 interface DevServerState {
-  port?: number;                    // e.g., 3000
-  address?: string;                 // e.g., http://localhost:3000
-  processType?: 'terminal' | 'pm2' | 'background' | 'unknown';
-  pid?: number;                     // Process ID
-  serverTech?: string;              // e.g., "Next.js", "Vite"
-  buildCommand?: string;            // e.g., "npm run build"
-  startCommand?: string;            // e.g., "npm run dev"
-  logPath?: string;                 // Path to logs
-  status: 'running' | 'stopped' | 'unknown';
-  lastChecked?: Date;               // When state was last updated
-  projectPath?: string;             // Full project directory path
-  projectName?: string;             // Project folder name
+  managedProcesses: Record<string, ManagedProcessConfig>;
+  lastSynced?: Date;
 }
 ```
-
-## Auto-Detection Strategy
-- Scans common dev server ports: 3000, 3001, 4200, 5000, 5173, 8080, 8000, 9000
-- Uses `lsof` to check port usage and get PID
-- Uses `ps` to get full command
-- Uses `lsof -p <pid> | grep cwd` to get project directory
-- Determines process type (terminal/PM2/background)
-- Auto-updates internal state with discovered information
+The registry persists to `.the-dev-server-state.json`; PM2 commands are generated from these configs.
 
 ## Embedded Instructions
-The MCP includes built-in instructions that Claude sees on connection:
-- ALWAYS use this MCP for server questions
-- Call get-server-state() or detect-server-process() first
-- Update state when user provides new information
-- Never assume port numbers or status
+Claude receives built-in instructions on connection:
+- ALWAYS manage dev servers via this MCP (no manual PM2 commands)
+- Register processes with `register-managed-process()` before use
+- Use MCP lifecycle tools for start/stop/restart/delete
+- Lean on `diagnose-server` + log tailing for troubleshooting
 
 ## Code Generation Guidelines (for Copilot)
 
 When generating code related to servers in projects using this MCP:
 
 ### DO:
-- ✅ Use environment variables for ports (`process.env.PORT || 3000`)
-- ✅ Add comments mentioning the MCP tracks server state
-- ✅ Suggest configurable server settings
-- ✅ Include proper error handling for port conflicts
-- ✅ Log server startup information (port, address)
+- ✅ Use environment variables for ports (`process.env.PORT || 3000`) so MCP can inject them
+- ✅ Mention MCP registration/update flows when introducing new scripts or services
+- ✅ Add comments reminding that PM2 is managed by the MCP
+- ✅ Include proper error handling for port conflicts and log helpful startup info
 
 ### DON'T:
 - ❌ Hardcode port numbers without fallbacks
-- ❌ Assume a specific port is available
-- ❌ Skip logging server startup details
+- ❌ Assume processes are started manually
+- ❌ Provide instructions that bypass the MCP (e.g., raw `pm2` CLI commands)
 
 ### Example Pattern:
 ```typescript
-// Server port tracked by the-dev-server MCP
+// Server port managed by the-dev-server MCP via PM2
 // Allows override via environment variable
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
-  // Claude can detect this via the-dev-server MCP
+  // Claude manages this process via the-dev-server MCP
 });
 ```
 
 ## Execution Guidelines
-- Project is complete and production-ready
-- To make changes: Edit `src/index.ts` and run `npm run build`
-- Test by integrating with Claude Desktop
-- Refer to HOW-IT-WORKS.lock.md for comprehensive usage details
-- Share CLAUDE.md.example with users for project-level instructions
-- Share .clinerules.example for CLI AI assistant integration
+- Project is production-ready
+- Make changes in `src/index.ts` and run `npm run build`
+- Integrate with Claude Desktop for end-to-end testing
+- See HOW-IT-WORKS.lock.md for the authoritative architecture guide
+- Share CLAUDE.md.example and .clinerules.example with users/teammates
 
 ## Platform Support
-- ✅ macOS - Fully supported
-- ✅ Linux - Fully supported
-- ❌ Windows - Not yet supported (uses Unix commands: lsof, ps)
+- ✅ macOS – Fully supported
+- ✅ Linux – Fully supported
+- ❌ Windows – Not yet supported (relies on Unix + PM2)
 
 ## Future Enhancements
-- Windows support (PowerShell equivalents)
-- Multi-project tracking (multiple servers simultaneously)
+- Windows/PowerShell support
+- Multi-service orchestration (groups & batch commands)
+- Docker/Compose integration alongside PM2
+- Health monitoring & auto-healing policies
+- Remote PM2 target support
+- Historical restart/log snapshots
 - Docker container integration
-- Real-time health monitoring
-- State persistence to disk

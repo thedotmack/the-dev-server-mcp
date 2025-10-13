@@ -1,9 +1,9 @@
 # HOW-IT-WORKS.lock.md
 ## The-Dev-Server MCP - The Definitive Truth Guide
 
-**Last Updated:** October 12, 2025  
+**Last Updated:** October 13, 2025  
 **Version:** 0.1.0  
-**Status:** ✅ OPERATIONAL & PRODUCTION-READY
+**Status:** ✅ OPERATIONAL & PRODUCTION-READY (PM2 manager refresh)
 
 ---
 
@@ -21,13 +21,13 @@ This leads to endless confusion, repeated questions, and incorrect assumptions t
 
 ## 🔧 THE SOLUTION
 
-**the-dev-server MCP** is a Model Context Protocol server that acts as a **single source of truth** for development server state. It provides:
+**the-dev-server MCP** is a Model Context Protocol server that acts as a **single source of truth** for PM2-managed development processes. It now provides:
 
-1. **State Tracking**: Persistent memory of server configuration and status
-2. **Auto-Detection**: Automatic discovery of running development servers
-3. **Status Queries**: Quick access to current server state
-4. **Log Access**: Direct access to server logs
-5. **Process Management Awareness**: Integration with terminal, PM2, and background processes
+1. **Managed Registry** – Declare each dev service (script, args, cwd, env) once.
+2. **Lifecycle Control** – Start, stop, restart, and delete PM2 processes without leaving the conversation.
+3. **Config Drift Prevention** – Apply updates to stored configs and sync PM2 immediately.
+4. **Unified Status** – Merge persisted registrations with live PM2 metadata.
+5. **Integrated Logs** – Tail stdout/err directly for any registered process.
 
 ## 🏗️ ARCHITECTURE
 
@@ -36,163 +36,149 @@ This leads to endless confusion, repeated questions, and incorrect assumptions t
 ```
 the-dev-server MCP
 ├── Tools (Actions)
-│   ├── get-server-state       → Returns current tracked state
-│   ├── update-server-state    → Updates tracked state with new info
-│   ├── detect-server-process  → Auto-detects running servers
-│   ├── check-port-status      → Checks if a port is in use
-│   ├── read-server-logs       → Reads server log files
-│   └── get-pm2-status         → Gets PM2 process status
+│   ├── get-managed-processes   → Registry + live PM2 snapshot
+│   ├── register-managed-process→ Persist config (optionally start)
+│   ├── update-managed-process  → Mutate config (+ optional redeploy)
+│   ├── start-managed-process   → Start via PM2 using stored config
+│   ├── stop-managed-process    → PM2 stop
+│   ├── restart-managed-process → PM2 restart
+│   ├── delete-managed-process  → Remove registry (and PM2)
+│   ├── describe-managed-process→ Raw PM2 describe output
+│   ├── read-managed-process-logs → Tail stdout/err
+│   └── get-pm2-status          → Global PM2 overview
 ├── Resources (Data)
-│   └── server-config          → Provides package.json and config
+│   └── server-config           → Provides package.json metadata
 └── Prompts (Templates)
-    └── diagnose-server        → Structured diagnostic prompt
+  └── diagnose-server         → PM2-centric troubleshooting prompt
 ```
 
 ### State Model
 
-The server maintains a persistent state object:
+The server persists a registry file `.the-dev-server-state.json` that mirrors:
 
 ```typescript
+interface ManagedProcessConfig {
+  name: string;
+  script: string;
+  cwd?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  interpreter?: string;
+  instances?: number;
+  watch?: boolean;
+  autorestart?: boolean;
+}
+
 interface DevServerState {
-  port?: number;                // e.g., 3000
-  address?: string;             // e.g., http://localhost:3000
-  processType?: 'terminal' | 'pm2' | 'background' | 'unknown';
-  pid?: number;                 // Process ID
-  serverTech?: string;          // e.g., "Express", "Next.js", "Vite"
-  buildCommand?: string;        // e.g., "npm run build"
-  startCommand?: string;        // e.g., "npm start"
-  logPath?: string;             // e.g., "/path/to/server.log"
-  status: 'running' | 'stopped' | 'unknown';
-  lastChecked?: Date;           // When state was last updated
-  projectPath?: string;         // Full project directory path (e.g., "/Users/.../my-project")
-  projectName?: string;         // Project folder name (e.g., "my-project")
+  managedProcesses: Record<string, ManagedProcessConfig>;
+  lastSynced?: Date;
 }
 ```
 
 ## 🔄 HOW IT WORKS IN PRACTICE
 
-### Scenario 1: First Time Setup
+### Scenario 1: First Time Registration
 
-1. **User starts server**: `npm run dev` in terminal
-2. **Claude asks**: "Is the server running?"
-3. **Claude uses MCP**: Calls `detect-server-process`
-4. **MCP discovers**: Server on port 3000, PID 12345, running in terminal
-5. **MCP updates state**: Stores all this information
-6. **Claude remembers**: Can now reference this state in all future questions
+1. **User**: "Register the Next.js dev server."
+2. **Claude** calls `register-managed-process` with script, args, cwd, env.
+3. **MCP** persists config to `.the-dev-server-state.json` and starts PM2 using those parameters.
+4. **User**: "Done." From now on `start-managed-process` boots it instantly.
 
-### Scenario 2: Checking Status Later
+### Scenario 2: Routine Development
 
-1. **User**: "What's the dev server status?"
-2. **Claude calls**: `get-server-state` tool
-3. **MCP returns**: Full state including port, status, project location, last checked time
-4. **Claude responds**: "Your Next.js server is running on http://localhost:3000 (PID 12345) in a terminal process from project 'eagle-qa-monitoring' at /Users/.../eagle-qa-monitoring. Last checked 5 minutes ago."
+1. **User**: "Start the API and UI services."
+2. Claude runs `start-managed-process` twice using stored configs.
+3. `get-managed-processes` confirms both are online and shows PM2 PIDs + CPU/Memory.
 
-### Scenario 3: Debugging Issues
+### Scenario 3: Config Change
 
-1. **User**: "Server not responding"
-2. **Claude uses**: `diagnose-server` prompt
-3. **MCP guides**: Check process → check port → read logs → check PM2
-4. **Claude investigates**: Uses all tools to build complete picture
-5. **Claude reports**: "Server process is running but port 3000 shows a different PID. Logs show error: EADDRINUSE."
+1. **User**: "Move the UI to port 4000."
+2. Claude calls `update-managed-process` with `env.PORT = 4000` and `applyToPm2: true`.
+3. MCP deletes the existing PM2 process, restarts with new env, and updates the registry timestamp.
 
-### Scenario 4: PM2 Integration
+### Scenario 4: Debugging
 
-1. **User**: "Check PM2 status"
-2. **Claude calls**: `get-pm2-status`
-3. **MCP queries**: PM2 for process list
-4. **Claude reports**: "3 PM2 processes running: api-server (online), worker (online), scheduler (errored)"
+1. **User**: "The queue worker is stuck."
+2. Claude launches the `diagnose-server` prompt → instructs it to `get-managed-processes`, `restart-managed-process`, then `read-managed-process-logs`.
+3. Response includes the restart result and the last 50 log lines, surfacing failure details.
 
 ## 🎓 USAGE INSTRUCTIONS FOR CLAUDE
 
 ### When to Use This MCP
 
 **ALWAYS use the-dev-server MCP when:**
-- User asks about "the server"
-- User mentions ports or URLs
-- User asks to start/stop/check a server
-- User reports server issues
-- User asks "is it running?"
-- You need to know the server state
-- You're confused about what server is running
+- Registering or modifying dev service definitions
+- Starting, stopping, or restarting anything managed by PM2
+- Inspecting logs or statuses for registered services
+- Running the scripted troubleshooting flow
+- Cleaning up retired services
 
 ### Workflow Pattern
 
 ```
-1. FIRST TIME SEEING PROJECT
-   → Call detect-server-process()
-   → Call get-server-state() to see what we know
-   → Update user on findings
+1. NEW PROJECT
+  → register-managed-process() for each dev server
+  → get-managed-processes() to confirm registration
 
-2. USER ASKS ABOUT SERVER
-   → Call get-server-state() to check current knowledge
-   → If uncertain, call detect-server-process()
-   → Provide specific answer with details
+2. DAILY WORKFLOW
+  → start-managed-process() / stop-managed-process()
+  → restart-managed-process() after code changes
 
-3. USER REPORTS ISSUE
-   → Use diagnose-server prompt
-   → Follow structured diagnostic process
-   → Call read-server-logs() if needed
+3. CONFIG UPDATES
+  → update-managed-process({ ...config, applyToPm2: true })
 
-4. USER CHANGES SERVER CONFIG
-   → Call update-server-state() with new information
-   → Confirm update to user
+4. INCIDENT RESPONSE
+  → Use diagnose-server prompt
+  → Tail logs via read-managed-process-logs()
+
+5. DECOMMISSION SERVICES
+  → delete-managed-process({ name, deleteFromPm2: true })
 ```
 
 ### Example MCP Calls
 
-**Get current state:**
+**Register a process:**
 ```json
 {
-  "tool": "get-server-state",
-  "arguments": {}
-}
-```
-
-**Update state when user tells you something:**
-```json
-{
-  "tool": "update-server-state",
+  "tool": "register-managed-process",
   "arguments": {
-    "port": 3000,
-    "address": "http://localhost:3000",
-    "processType": "terminal",
-    "serverTech": "Next.js",
-    "buildCommand": "npm run build",
-    "startCommand": "npm run dev",
-    "status": "running",
-    "projectPath": "/Users/alexnewman/Scripts/my-project",
-    "projectName": "my-project"
+    "name": "next-app",
+    "script": "npm",
+    "args": ["run", "dev"],
+    "cwd": "/Users/alexnewman/Projects/next-app",
+    "env": { "PORT": "3000" }
   }
 }
 ```
 
-**Auto-detect running servers:**
+**Start a registered process:**
 ```json
 {
-  "tool": "detect-server-process",
+  "tool": "start-managed-process",
+  "arguments": { "name": "next-app" }
+}
+```
+
+**Apply a config change:**
+```json
+{
+  "tool": "update-managed-process",
   "arguments": {
-    "workingDirectory": "/path/to/project"
+    "name": "next-app",
+    "env": { "PORT": "4000" },
+    "applyToPm2": true
   }
 }
 ```
 
-**Check specific port:**
+**Tail error logs:**
 ```json
 {
-  "tool": "check-port-status",
+  "tool": "read-managed-process-logs",
   "arguments": {
-    "port": 3000
-  }
-}
-```
-
-**Read logs:**
-```json
-{
-  "tool": "read-server-logs",
-  "arguments": {
-    "logPath": "/path/to/logs/server.log",
-    "lines": 50
+    "name": "next-app",
+    "type": "error",
+    "lines": 100
   }
 }
 ```
@@ -201,19 +187,19 @@ interface DevServerState {
 
 ### What This MCP Guarantees
 
-✅ **Persistent memory** of server state across conversations  
-✅ **Auto-detection** of common dev servers on ports 3000-9000  
-✅ **Real-time process checking** using system commands  
-✅ **Log file access** for debugging  
-✅ **PM2 integration** for production-like setups  
+✅ **Persistent registry** of managed processes across MCP restarts  
+✅ **Deterministic PM2 operations** driven off stored config  
+✅ **Consistent lifecycle commands** (`start/stop/restart/delete`)  
+✅ **Log tailing** without manual file lookup  
+✅ **Global PM2 status** via MCP  
 
 ### What This MCP Does NOT Do
 
-❌ Does not automatically start/stop servers (only tracks them)  
-❌ Does not modify code or configuration files  
-❌ Does not restart crashed servers  
-❌ Does not manage multiple projects simultaneously  
-❌ Does not work on Windows (uses Unix commands like `lsof`, `ps`)  
+❌ Does not auto-detect unmanaged processes anymore (must be registered)  
+❌ Does not modify application code or env files  
+❌ Does not provide health probes beyond PM2 status  
+❌ Does not yet manage multiple hosts or remote PM2 targets  
+❌ Does not work on Windows (relies on Unix + PM2)  
 
 ### Platform Compatibility
 
@@ -227,37 +213,31 @@ interface DevServerState {
 
 | Tool | Purpose | Key Use Case |
 |------|---------|--------------|
-| `get-server-state` | Retrieve current tracked state | "What's the server status?" |
-| `update-server-state` | Manually update state | User says "I started it on port 4000" |
-| `detect-server-process` | Auto-find running servers | "Find any dev servers running" |
-| `check-port-status` | Check if port is occupied | "Is port 3000 free?" |
-| `read-server-logs` | Access log files | "Show me the recent errors" |
-| `get-pm2-status` | Query PM2 processes | "What's running in PM2?" |
+| `get-managed-processes` | Registry + live PM2 status | "What dev services exist and which are running?" |
+| `register-managed-process` | Persist new config; optional start | "Add the UI dev server" |
+| `update-managed-process` | Change config; optional redeploy | "Switch the API to port 8080" |
+| `start-managed-process` | Start via PM2 | "Boot the worker" |
+| `stop-managed-process` | Stop via PM2 | "Pause the worker" |
+| `restart-managed-process` | Restart via PM2 | "Reload the API" |
+| `delete-managed-process` | Remove from registry (and PM2) | "Retire the legacy service" |
+| `describe-managed-process` | Raw PM2 describe output | "Show me PM2 metadata" |
+| `read-managed-process-logs` | Tail logs | "Show the last errors" |
+| `get-pm2-status` | Global PM2 snapshot | "List everything PM2 is running" |
 
-### Detection Strategy
+### PM2 Execution Strategy
 
-The MCP scans common dev server ports:
-- 3000, 3001 (React, Next.js default)
-- 4200 (Angular default)
-- 5000, 5173 (Vite, general dev servers)
-- 8080, 8000 (Common alternatives)
-- 9000 (Various frameworks)
-
-For each port, it:
-1. Uses `lsof -i :PORT` to check if port is in use
-2. Gets the PID of the process using that port
-3. Uses `ps -p PID` to get the full command
-4. Uses `lsof -p PID | grep cwd` to get the project directory
-5. Extracts the project name from the directory path
-6. Determines process type (terminal/PM2/background)
-7. Auto-updates internal state with all discovered information
+- Uses `pm2 start` with stored script/interpreter/args/env to launch processes.
+- Wraps `pm2 stop`, `pm2 restart`, and `pm2 delete` for lifecycle control.
+- Reads process metadata using `pm2 jlist` and `pm2 describe` for status views.
+- Tails logs via `pm2 logs <name> --nostream` with dynamic line counts and stream selection.
 
 ### State Persistence
 
-State is held in memory during the MCP server session. This means:
-- State persists across multiple Claude queries in the same session
-- State is lost when the MCP server restarts
-- Best practice: Update state when user provides new information
+State is persisted on disk (`.the-dev-server-state.json`) and mirrored in memory:
+- Survives MCP restarts and machine reboots.
+- Updated atomically after every registry mutation.
+- Timestamp (`lastSynced`) reflects the last successful write.
+- Manual edits are discouraged—use MCP tools to guarantee schema fidelity.
 
 ## 📋 INTEGRATION GUIDE
 
@@ -291,7 +271,7 @@ cp /path/to/the-dev-server-mcp/.clinerules.example /your/project/.clinerules
 ```
 
 **Option 3: Tell Claude directly in conversation:**
-> "We are using the-dev-server MCP for tracking all development server state. ALWAYS use this MCP when dealing with server questions. Call get-server-state or detect-server-process at the start of server-related conversations."
+> "We use the-dev-server MCP to register and manage every dev server through PM2. ALWAYS use its tools (register/start/stop/restart) instead of running PM2 manually."
 
 > **💡 Note:** The MCP includes built-in embedded instructions that Claude sees automatically. Project files are optional but recommended for consistency.
 
@@ -299,50 +279,42 @@ cp /path/to/the-dev-server-mcp/.clinerules.example /your/project/.clinerules
 
 You'll know this MCP is working when:
 
-1. ✅ Claude never asks "What port is the server on?" after first detection
-2. ✅ Claude accurately knows whether server is running or stopped
-3. ✅ Claude can quickly retrieve logs when debugging
-4. ✅ Claude understands the process management (terminal vs PM2)
-5. ✅ Claude doesn't make wrong assumptions about server state
+1. ✅ Every active dev service is registered and visible via `get-managed-processes`
+2. ✅ Claude starts/stops/restarts services solely through MCP tools
+3. ✅ PM2 never has orphaned or mystery processes
+4. ✅ Log tailing and diagnostics happen without shell pivots
+5. ✅ Config changes are applied through MCP updates, not hand-edited files
 
 ## 🔮 FUTURE ENHANCEMENTS
 
 Potential future features:
-- Multi-project tracking (multiple servers at once)
-- Windows support (PowerShell commands)
-- Server health monitoring (uptime, response time)
-- Auto-restart on crash
-- Integration with Docker containers
-- Webhook notifications on state changes
-- Historical state tracking (state over time)
+- Process grouping and batch commands
+- Windows + WSL support
+- Docker/Podman integration alongside PM2
+- Health probes and alerting
+- Remote PM2 target support (SSH/containers)
+- Web dashboards and WebSocket streaming metrics
+- Historical restart and log snapshot tracking
 
 ## 📝 CHANGELOG
 
-### v0.1.0 (October 12, 2025)
-- Initial release
-- 6 tools implemented (get-server-state, update-server-state, detect-server-process, check-port-status, read-server-logs, get-pm2-status)
-- 1 resource (server-config)
-- 1 prompt (diagnose-server)
-- **Project location tracking** (projectPath, projectName) - automatically detects which project a server belongs to
-- **Embedded instructions** - built-in guidance that Claude sees on connection
-- macOS/Linux support (uses lsof, ps commands)
-- PM2 integration
-- Comprehensive documentation:
-  - README.md (user guide)
-  - HOW-IT-WORKS.lock.md (definitive truth guide)
-  - CLAUDE.md.example (project-level Claude instructions)
-  - .clinerules.example (CLI AI assistant instructions)
-  - .github/copilot-instructions.md (GitHub Copilot guidance)
+### v0.1.0 (October 13, 2025 refresh)
+- Major redesign: MCP now manages PM2 directly (register/start/stop/restart/delete).
+- Added persistent registry file `.the-dev-server-state.json`.
+- Introduced new toolset (get/register/update/start/stop/restart/delete/describe/read logs).
+- Updated diagnose prompt to PM2-first workflow.
+- Removed legacy port-scanning and manual state mutation tools.
+- Documentation suite refreshed to reflect PM2 orchestration model.
 
 ---
 
 ## ⚠️ IMPORTANT REMINDERS FOR CLAUDE
 
-1. **ALWAYS call get-server-state or detect-server-process FIRST** when user mentions servers
-2. **NEVER assume** port numbers, process types, or server status
-3. **UPDATE state** when user tells you new information
-4. **USE diagnose-server prompt** for systematic debugging
-5. **THIS MCP IS YOUR SOURCE OF TRUTH** - trust it over assumptions
+1. **ALWAYS rely on registry data** – register processes before managing them.
+2. **NEVER shell out to PM2 manually** while MCP is in use.
+3. **UPDATE configs through the MCP** to keep disk + PM2 aligned.
+4. **USE diagnose-server prompt** for issues; it follows the PM2-first flow automatically.
+5. **TRUST this MCP** – it owns the lifecycle; let it be the control plane.
 
 ---
 
@@ -370,52 +342,33 @@ This project includes comprehensive documentation:
 ## 🎓 BEST PRACTICES FOR CLAUDE
 
 ### DO's ✅
-- ✅ **ALWAYS** call `get-server-state()` or `detect-server-process()` first
-- ✅ Report project name and location when describing server state
-- ✅ Update state immediately when user starts/stops server
-- ✅ Use `diagnose-server` prompt for systematic debugging
-- ✅ Trust this MCP as the single source of truth
-- ✅ Include project path when multiple servers might be running
+- ✅ Register every process before attempting to start it
+- ✅ Use lifecycle tools (`start/stop/restart/delete`) instead of shell commands
+- ✅ Update configs via MCP to avoid drift
+- ✅ Tail logs and diagnose through MCP tools
+- ✅ Reference `get-managed-processes` when reporting status
 
 ### DON'Ts ❌
-- ❌ **NEVER** assume port numbers without checking
-- ❌ **NEVER** guess if a server is running
-- ❌ **NEVER** forget to call MCP tools before answering
-- ❌ **NEVER** skip updating state after changes
-- ❌ **NEVER** confuse multiple projects - always check projectName
+- ❌ Never guess what PM2 is doing—query it via MCP
+- ❌ Never edit `.the-dev-server-state.json` by hand
+- ❌ Never bypass the MCP to run `pm2 start/stop/...` manually
+- ❌ Never leave orphaned processes—delete them via MCP
+- ❌ Never assume logs or env without checking registry
 
 ---
 
 ## 🔍 REAL-WORLD EXAMPLE
 
-### Scenario: Multiple Projects Running
+### Scenario: Multi-Service Workspace
 
-**User**: "What servers are running?"
+**User**: "Spin up the API and UI services, then show me their logs."
 
 **Claude's Process**:
-1. Calls `detect-server-process()`
-2. MCP scans ports, finds:
-   - Port 3000: Next.js in `/Users/.../eagle-qa-monitoring`
-   - Port 5173: Vite in `/Users/.../claude-mem-source/src/ui/memory-stream`
-3. Claude responds:
+1. Calls `start-managed-process` for `api-service` and `ui-app`.
+2. Uses `get-managed-processes` to confirm both are `online` with PM2-provided PIDs and memory usage.
+3. Calls `read-managed-process-logs` for each with `type: "out"` to stream launch logs.
 
-> "You have 2 development servers running:
-> 
-> **1. eagle-qa-monitoring (Next.js)**
-> - Port: 3000
-> - URL: http://localhost:3000
-> - Location: `/Users/alexnewman/Scripts/eagle-qa-monitoring`
-> - PID: 22111
-> - Type: Terminal process
-> 
-> **2. memory-stream (Vite)**
-> - Port: 5173
-> - URL: http://localhost:5173
-> - Location: `/Users/.../claude-mem-source/src/ui/memory-stream`
-> - PID: 92521
-> - Type: Terminal process"
-
-**Key Insight**: Project location tracking eliminates confusion about which project is which!
+**Claude responds** with a consolidated status + the most recent log lines, all without shelling out.
 
 ---
 
